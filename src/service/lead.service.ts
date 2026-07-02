@@ -3,6 +3,7 @@ import Lead from '../models/Lead';
 import DuplicateLead from '../models/DuplicateLead';
 import User from '../models/User';
 import { getCsvFromGoogleSheet } from '../utils/googleSheet';
+import { applyLeadDateFilter } from '../utils/leadDateFilter';
 
 export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
   const rows = await getCsvFromGoogleSheet(sheetUrl);
@@ -338,10 +339,7 @@ export const getLeadsService = async (
     priority,
     assignedTo,
     folder,
-    search,
-    date,
-    fromDate,
-    toDate
+    search
   } = req.query;
 
   const pageNum = parseInt(page as string, 10);
@@ -437,26 +435,8 @@ export const getLeadsService = async (
     }
   }
 
-  // ---------------- 📅 DATE FILTER (FIXED FOR ACCURACY) ----------------
-  if (date) {
-    const start = new Date(date as string);
-    start.setUTCHours(0, 0, 0, 0);
-    const end = new Date(date as string);
-    end.setUTCHours(23, 59, 59, 999);
-    filter.createdAt = { $gte: start, $lte: end };
-  } else if (fromDate || toDate) {
-    filter.createdAt = {};
-    if (fromDate) {
-      const start = new Date(fromDate as string);
-      start.setUTCHours(0, 0, 0, 0);
-      filter.createdAt.$gte = start;
-    }
-    if (toDate) {
-      const end = new Date(toDate as string);
-      end.setUTCHours(23, 59, 59, 999);
-      filter.createdAt.$lte = end;
-    }
-  }
+  // ---------------- 📅 DATE FILTER ----------------
+  applyLeadDateFilter(filter, req.query as Record<string, unknown>);
 
   // Temporary debug block for API filter diagnostics.
   // Enable with DEBUG_LEADS_FILTER=true in backend .env
@@ -671,13 +651,25 @@ export const getMyLeadsService = async (req: Request) => {
 
   if (search) {
     const regex = new RegExp(search as string, 'i');
-    filter.$or = [
+    const searchConditions = [
       { name: regex },
       { email: regex },
       { phone: regex },
       { position: regex }
     ];
+
+    if (filter.$or) {
+      filter.$and = [
+        { $or: filter.$or },
+        { $or: searchConditions }
+      ];
+      delete filter.$or;
+    } else {
+      filter.$or = searchConditions;
+    }
   }
+
+  applyLeadDateFilter(filter, req.query as Record<string, unknown>);
 
   /* ---------- QUERY ---------- */
   const [leads, total] = await Promise.all([

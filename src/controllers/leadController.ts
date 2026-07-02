@@ -9,6 +9,7 @@ import type {
 } from '../types';
 import { assignLeadsService, getAdminLeadStatsService, getAllChatsService, getDuplicateAndUncategorizedCountService, getDuplicateLeadsService, getLeadsService, getMyLeadsService, importLeadsFromGoogleSheetService, searchLeadsService } from '../service/lead.service';
 import { sendError } from '../utils/sendError';
+import { getLeadDateFilter } from '../utils/leadDateFilter';
 
 
 
@@ -690,7 +691,10 @@ export const getDistinctFolders = async (req: Request, res: Response): Promise<v
 // Get stats for all leads assigned to the current user (independent of filters or pagination)
 export const getMyLeadsStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    const filter = { assignedTo: req.user?.userId };
+    const filter = {
+      assignedTo: req.user?.userId,
+      ...getLeadDateFilter(req.query as Record<string, unknown>)
+    };
     const leads = await Lead.find(filter).lean();
 
     const total = leads.length;
@@ -734,8 +738,10 @@ export const getFolderCounts = async (req: Request, res: Response): Promise<any>
 
     const userObjectId = new mongoose.Types.ObjectId(userId as string);
 
+    const dateFilter = getLeadDateFilter(req.query as Record<string, unknown>);
+
     const statsData = await Lead.aggregate([
-      { $match: { assignedTo: userObjectId } },
+      { $match: { assignedTo: userObjectId, ...dateFilter } },
       {
         $facet: {
           // Count every single lead assigned to this user
@@ -824,6 +830,10 @@ export const getFolderCountsForAdmin = async (req: Request, res: Response): Prom
       };
     } 
     // If user IS admin, baseFilter remains {}, which matches ALL leads in the DB
+    baseFilter = {
+      ...baseFilter,
+      ...getLeadDateFilter(req.query as Record<string, unknown>)
+    };
 
     const statsData = await Lead.aggregate([
       { $match: baseFilter }, // Filter applied here

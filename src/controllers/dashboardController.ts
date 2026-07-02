@@ -2,17 +2,21 @@ import { Request, Response } from 'express';
 import { Types } from 'mongoose';
 import Lead from '../models/Lead';
 import type { DashboardStats } from '../types';
+import { getLeadDateFilter } from '../utils/leadDateFilter';
 
-const getPeriodWindow = (period: string, from?: string, to?: string) => {
+const getPeriodWindow = (period: string, from?: string, to?: string, timezoneOffsetMinutes?: unknown) => {
   const now = new Date();
   let start = new Date(now);
   let end = new Date(now);
 
-  if (period === 'custom' && from && to) {
-    start = new Date(from);
-    end = new Date(to);
-    start.setHours(0, 0, 0, 0);
-    end.setHours(23, 59, 59, 999);
+  if (from || to) {
+    const dateFilter = getLeadDateFilter({
+      fromDate: from,
+      toDate: to,
+      timezoneOffsetMinutes
+    } as Record<string, unknown>) as { createdAt?: { $gte?: Date; $lte?: Date } };
+    start = dateFilter.createdAt?.$gte ?? start;
+    end = dateFilter.createdAt?.$lte ?? end;
     return { start, end };
   }
 
@@ -36,8 +40,13 @@ const getPeriodWindow = (period: string, from?: string, to?: string) => {
 
 export const getPeriodLeadStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { period = 'today', from, to } = req.query;
-    const { start, end } = getPeriodWindow(String(period), from as string | undefined, to as string | undefined);
+    const { period = 'today', from, to, timezoneOffsetMinutes } = req.query;
+    const { start, end } = getPeriodWindow(
+      String(period),
+      from as string | undefined,
+      to as string | undefined,
+      timezoneOffsetMinutes
+    );
 
     if (!req.user?.userId) {
       res.status(401).json({
@@ -236,7 +245,10 @@ export const getAdminDashboardStats = async (req: Request, res: Response): Promi
 
 export const getLeadsByStatus = async (req: Request, res: Response): Promise<void> => {
   try {
-    const baseMatch = req.user?.role === 'admin' ? {} : { assignedTo: req.user?.userId };
+    const baseMatch = {
+      ...(req.user?.role === 'admin' ? {} : { assignedTo: new Types.ObjectId(String(req.user?.userId)) }),
+      ...getLeadDateFilter(req.query as Record<string, unknown>)
+    };
 
     const leadsByStatus = await Lead.aggregate([
       { $match: baseMatch },
@@ -269,7 +281,10 @@ export const getLeadsByStatus = async (req: Request, res: Response): Promise<voi
 
 export const getLeadsBySource = async (req: Request, res: Response): Promise<void> => {
   try {
-    const baseMatch = req.user?.role === 'admin' ? {} : { assignedTo: req.user?.userId };
+    const baseMatch = {
+      ...(req.user?.role === 'admin' ? {} : { assignedTo: new Types.ObjectId(String(req.user?.userId)) }),
+      ...getLeadDateFilter(req.query as Record<string, unknown>)
+    };
 
     const leadsBySource = await Lead.aggregate([
       { $match: baseMatch },
@@ -305,7 +320,13 @@ export const getRecentActivity = async (req: Request, res: Response): Promise<vo
     const { limit = 10 } = req.query;
     const limitNum = parseInt(limit as string, 10);
 
-  const baseMatch = req.user?.role === 'admin' ? {} : { assignedTo: typeof req.user?.userId === 'string' ? new (require('mongoose')).Types.ObjectId(req.user.userId) : req.user?.userId };
+    const baseMatch = {
+      ...(req.user?.role === 'admin' ? {} : { assignedTo: new Types.ObjectId(String(req.user?.userId)) }),
+      ...getLeadDateFilter({
+        ...req.query,
+        dateField: req.query.dateField || 'updatedAt'
+      } as Record<string, unknown>)
+    };
 
     const recentLeads = await Lead.find(baseMatch)
       .populate('assignedTo', 'name email')
@@ -344,33 +365,34 @@ export const getLeadMetrics = async (req: Request, res: Response): Promise<void>
   try {
     const { period = '30d' } = req.query;
 
-    let dateFilter: any = {};
+    let dateFilter: any = getLeadDateFilter(req.query as Record<string, unknown>);
     const now = new Date();
 
-    switch (period) {
-      case '7d':
-        dateFilter = {
-          createdAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) }
-        };
-        break;
-      case '30d':
-        dateFilter = {
-          createdAt: { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) }
-        };
-        break;
-      case '90d':
-        dateFilter = {
-          createdAt: { $gte: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000) }
-        };
-        break;
-      default:
-        // No date filter for 'all'
-        break;
+    if (Object.keys(dateFilter).length === 0) {
+      switch (period) {
+        case '7d':
+          dateFilter = {
+            createdAt: { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) }
+          };
+          break;
+        case '30d':
+          dateFilter = {
+            createdAt: { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) }
+          };
+          break;
+        case '90d':
+          dateFilter = {
+            createdAt: { $gte: new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000) }
+          };
+          break;
+        default:
+          break;
+      }
     }
 
     const baseMatch = req.user?.role === 'admin' ? dateFilter : {
       ...dateFilter,
-      assignedTo: req.user?.userId
+      assignedTo: new Types.ObjectId(String(req.user?.userId))
     };
 
     // Calculate leads this week and this month
