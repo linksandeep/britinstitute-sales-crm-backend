@@ -1,6 +1,132 @@
 import { Request, Response } from 'express';
+import { Types } from 'mongoose';
 import Lead from '../models/Lead';
 import type { DashboardStats } from '../types';
+
+const getPeriodWindow = (period: string, from?: string, to?: string) => {
+  const now = new Date();
+  let start = new Date(now);
+  let end = new Date(now);
+
+  if (period === 'custom' && from && to) {
+    start = new Date(from);
+    end = new Date(to);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+
+  if (period === 'week') {
+    start.setDate(now.getDate() - now.getDay());
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+
+  if (period === 'month') {
+    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
+export const getPeriodLeadStats = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { period = 'today', from, to } = req.query;
+    const { start, end } = getPeriodWindow(String(period), from as string | undefined, to as string | undefined);
+
+    if (!req.user?.userId) {
+      res.status(401).json({
+        success: false,
+        message: 'User not authenticated'
+      });
+      return;
+    }
+
+    const ownerMatch = req.user.role === 'admin' ? {} : { assignedTo: new Types.ObjectId(req.user.userId) };
+    const periodMatch = {
+      ...ownerMatch,
+      updatedAt: { $gte: start, $lte: end }
+    };
+
+    const [
+      statusBreakdown,
+      sourceBreakdown,
+      updatedLeads,
+      createdLeads,
+      assignedLeads,
+      unassignedLeads,
+      recentUpdates
+    ] = await Promise.all([
+      Lead.aggregate([
+        { $match: periodMatch },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]),
+      Lead.aggregate([
+        { $match: periodMatch },
+        { $group: { _id: '$source', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]),
+      Lead.countDocuments(periodMatch),
+      Lead.countDocuments({
+        ...ownerMatch,
+        createdAt: { $gte: start, $lte: end }
+      }),
+      Lead.countDocuments({
+        ...periodMatch,
+        assignedTo: { $exists: true, $ne: null }
+      }),
+      Lead.countDocuments({
+        ...periodMatch,
+        $or: [{ assignedTo: { $exists: false } }, { assignedTo: null }]
+      }),
+      Lead.find(periodMatch)
+        .sort({ updatedAt: -1 })
+        .limit(8)
+        .populate('assignedToUser', 'name email')
+        .select('name email phone status source priority assignedTo assignedToUser updatedAt createdAt')
+        .lean()
+    ]);
+
+    const countByStatus = (status: string) =>
+      statusBreakdown.find((item) => item._id === status)?.count || 0;
+
+    res.status(200).json({
+      success: true,
+      message: 'Period lead statistics retrieved successfully',
+      data: {
+        period,
+        from: start.toISOString(),
+        to: end.toISOString(),
+        updatedLeads,
+        createdLeads,
+        assignedLeads,
+        unassignedLeads,
+        newLeads: countByStatus('New'),
+        contactedLeads: countByStatus('Contacted'),
+        qualifiedLeads: countByStatus('Qualified'),
+        salesDone: countByStatus('Sales Done'),
+        dnpLeads: countByStatus('DNP'),
+        statusBreakdown,
+        sourceBreakdown,
+        recentUpdates,
+        lastUpdated: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Get period lead stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve period lead statistics',
+      errors: [error instanceof Error ? error.message : 'Unknown error occurred']
+    });
+  }
+};
 
 export const getDashboardStats = async (req: Request, res: Response): Promise<void> => {
   try {

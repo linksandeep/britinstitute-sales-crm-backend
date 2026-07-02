@@ -5,7 +5,8 @@ import {
   getLeadsByStatus,
   getLeadsBySource,
   getRecentActivity,
-  getLeadMetrics
+  getLeadMetrics,
+  getPeriodLeadStats
 } from '../controllers/dashboardController';
 import { authenticateToken, requireAuth, requireAdmin } from '../middleware/auth';
 
@@ -25,5 +26,6 @@ router.get('/leads/by-status', getLeadsByStatus);
 router.get('/leads/by-source', getLeadsBySource);
 router.get('/recent-activity', getRecentActivity);
 router.get('/metrics', getLeadMetrics);
+router.get('/period-stats', getPeriodLeadStats);
 
 export default router;
