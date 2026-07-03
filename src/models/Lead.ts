@@ -1,6 +1,8 @@
 import mongoose, { Schema } from 'mongoose';
 import type { ILead, ILeadNote, ILeadModel, LeadSource, LeadStatus, LeadPriority, IUser } from '../types';
 
+const optionalPhoneValidator = (value?: string) => !value || /^[\+]?[\d\s\-\(\)\.]{7,25}$/.test(value);
+
 const leadNoteSchema = new Schema<ILeadNote>({
   id: {
     type: String,
@@ -49,6 +51,22 @@ const leadSchema = new Schema<ILead>({
       /^[\+]?[\d\s\-\(\)\.]{7,25}$/,
       'Please enter a valid phone number'
     ]
+  },
+  whatsapp: {
+    type: String,
+    trim: true,
+    validate: {
+      validator: optionalPhoneValidator,
+      message: 'Please enter a valid WhatsApp number'
+    }
+  },
+  zoomPhoneNumber: {
+    type: String,
+    trim: true,
+    validate: {
+      validator: optionalPhoneValidator,
+      message: 'Please enter a valid Zoom Phone number'
+    }
   },
   position: {
     type: String,
@@ -162,6 +180,7 @@ const leadSchema = new Schema<ILead>({
 
 leadSchema.index({ email: 1 }, { unique: true });
 leadSchema.index({ phone: 1 }, { unique: true });
+leadSchema.index({ zoomPhoneNumber: 1 }, { sparse: true });
 leadSchema.index({ status: 1 });
 leadSchema.index({ source: 1 });
 leadSchema.index({ priority: 1 });
@@ -182,6 +201,8 @@ leadSchema.index({
   name: 'text',
   email: 'text',
   phone: 'text',
+  whatsapp: 'text',
+  zoomPhoneNumber: 'text',
   position: 'text',
   folder: 'text'
 });

@@ -48,6 +48,8 @@ export interface ILead extends Document {
   name: string;
   email: string;
   phone: string;
+  whatsapp?: string;
+  zoomPhoneNumber?: string;
   position: string;
   folder: string;
   source: LeadSource;
@@ -90,7 +92,16 @@ export interface ILeadNote {
   createdAt: Date;
 }
 
-export type LeadSource = 'Website' | 'Social Media' | 'Referral' | 'Import' | 'Manual' | 'Cold Call' | 'Email Campaign'|'strategy_call_modal';
+export type LeadSource =
+  | 'Website'
+  | 'Social Media'
+  | 'Referral'
+  | 'Import'
+  | 'Manual'
+  | 'Cold Call'
+  | 'Email Campaign'
+  | 'strategy_call_modal'
+  | 'data_analytics_landing_page';
 
 // LeadStatus is now dynamic - can be any string
 export type LeadStatus = string;
@@ -101,6 +112,8 @@ export interface CreateLeadInput {
   name: string;
   email: string;
   phone: string;
+  whatsapp?: string;
+  zoomPhoneNumber?: string;
   position?: string;
   folder?: string;
   source: LeadSource;
@@ -117,6 +130,8 @@ export interface UpdateLeadInput {
   name?: string;
   email?: string;
   phone?: string;
+  whatsapp?: string;
+  zoomPhoneNumber?: string;
   position?: string;
   folder?: string;
   source?: LeadSource;

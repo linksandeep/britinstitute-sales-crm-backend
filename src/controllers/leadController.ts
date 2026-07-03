@@ -323,7 +323,18 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
       }
     }
     // Update allowed fields
-    const allowedFields = ['name', 'email', 'phone', 'position', 'folder', 'source', 'status', 'priority'];
+    const allowedFields = [
+      'name',
+      'email',
+      'phone',
+      'whatsapp',
+      'zoomPhoneNumber',
+      'position',
+      'folder',
+      'source',
+      'status',
+      'priority'
+    ];
     allowedFields.forEach(field => {
       if (updateData[field as keyof UpdateLeadInput] !== undefined) {
         (lead as any)[field] = updateData[field as keyof UpdateLeadInput];
