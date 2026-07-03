@@ -21,7 +21,7 @@ export interface IAssignmentHistory {
 export interface IUser extends Document {
   name: string;
   email: string;
-  phone: string;
+  phone?: string;
   password: string;
   role: 'admin' | 'user';
   isActive: boolean;
@@ -37,6 +37,8 @@ export interface CreateUserInput {
   email: string;
   password: string;
   role: 'admin' | 'user';
+  phone?: string;
+  canWorkFromHome?: boolean;
 }
 
 export interface LoginInput {

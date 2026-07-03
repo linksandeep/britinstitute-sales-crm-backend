@@ -5,6 +5,7 @@ import leadRoutes from './leads';
 import dashboardRoutes from './dashboard';
 import statusRoutes from './status';
 import zoomPhoneRoutes from './zoomPhone';
+import zoomMeetingsRoutes from './zoomMeetings';
 import remindersRouter from './reminders.route'
 import ChatRouter from './chat.route'
 import attendanceRouter from './attendance.routes'
@@ -19,6 +20,7 @@ router.use('/leads', leadRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/statuses', statusRoutes);
 router.use('/zoom-phone', zoomPhoneRoutes);
+router.use('/zoom-meetings', zoomMeetingsRoutes);
 router.use('/reminders', remindersRouter);
 router.use("/chat",ChatRouter)
 router.use("/attendance",attendanceRouter);

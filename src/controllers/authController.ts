@@ -4,6 +4,11 @@ import User from '../models/User';
 import { generateToken } from '../middleware/auth';
 import type { LoginInput, CreateUserInput } from '../types';
 
+const isValidOptionalPhone = (phone: unknown) =>
+  phone === undefined ||
+  phone === null ||
+  (typeof phone === 'string' && (phone.trim() === '' || /^[\+]?[\d\s\-\(\)\.]{7,25}$/.test(phone.trim())));
+
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
     const { email, password }: LoginInput = req.body;
@@ -247,15 +252,15 @@ export const updateProfile = async (req: Request, res: Response): Promise<void> 
 
     // --- 2. Update Phone (Optional) ---
     if (phone !== undefined) {
-      if (typeof phone !== 'string' || phone.trim().length < 9) {
+      if (!isValidOptionalPhone(phone)) {
         res.status(400).json({
           success: false,
           message: 'Invalid phone number',
-          errors: ['Phone number must be at least 9 characters long']
+          errors: ['Phone number must be a valid international number']
         });
         return;
       }
-      user.phone = phone.trim();
+      user.phone = phone.trim() || undefined;
     }
 
     // --- 3. Save Changes ---

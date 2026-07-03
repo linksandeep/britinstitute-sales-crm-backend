@@ -11,6 +11,7 @@
     "seed:statuses": "tsx src/scripts/seedStatuses.ts",
     "seed:all": "npm run seed:statuses && npm run seed:users",
     "find-duplicates": "tsx src/scripts/findDuplicates.ts",
+    "backfill:ravikant-phone": "tsx src/scripts/backfillRavikantPhone.ts",
     "create-indexes": "tsx src/scripts/createIndexes.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

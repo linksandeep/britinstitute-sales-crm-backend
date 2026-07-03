@@ -2,6 +2,11 @@ import { Request, Response } from 'express';
 import User from '../models/User';
 import type { CreateUserInput } from '../types';
 
+const isValidOptionalPhone = (phone: unknown) =>
+  phone === undefined ||
+  phone === null ||
+  (typeof phone === 'string' && (phone.trim() === '' || /^[\+]?[\d\s\-\(\)\.]{7,25}$/.test(phone.trim())));
+
 export const getUsers = async (req: Request, res: Response): Promise<void> => {
   try {
     const { page = 1, limit = 10, role, search } = req.query;
@@ -18,7 +23,8 @@ export const getUsers = async (req: Request, res: Response): Promise<void> => {
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } }
       ];
     }
 
@@ -85,7 +91,7 @@ export const getUserById = async (req: Request, res: Response): Promise<void> =>
 
 export const createUser = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, email, password, role = 'user' }: CreateUserInput = req.body;
+    const { name, email, password, role = 'user', phone, canWorkFromHome = false }: CreateUserInput = req.body;
 
     // Validate input
     if (!name || !email || !password) {
@@ -118,6 +124,15 @@ export const createUser = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    if (!isValidOptionalPhone(phone)) {
+      res.status(400).json({
+        success: false,
+        message: 'Invalid phone number',
+        errors: ['Phone number must be a valid international number']
+      });
+      return;
+    }
+
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -134,7 +149,9 @@ export const createUser = async (req: Request, res: Response): Promise<void> => 
       name: name.trim(),
       email: email.toLowerCase().trim(),
       password,
-      role
+      role,
+      phone: phone?.trim() || undefined,
+      canWorkFromHome: Boolean(canWorkFromHome)
     });
 
     await user.save();
@@ -220,15 +237,15 @@ export const updateUser = async (req: Request, res: Response): Promise<void> => 
 
     // Phone Update
     if (phone !== undefined) {
-      if (typeof phone !== 'string' || phone.trim().length < 9) {
+      if (!isValidOptionalPhone(phone)) {
         res.status(400).json({
           success: false,
-          message: 'Invalid number',
-          errors: ['Number must be at least 9 characters long']
+          message: 'Invalid phone number',
+          errors: ['Phone number must be a valid international number']
         });
         return;
       }
-      user.phone = phone.trim();
+      user.phone = phone.trim() || undefined;
     }
 
     // Role Update

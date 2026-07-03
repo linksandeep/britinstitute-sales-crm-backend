@@ -2,6 +2,9 @@ import mongoose, { Schema } from 'mongoose';
 import bcrypt from 'bcryptjs';
 import type { IUser } from '../types';
 
+const optionalInternationalPhone = (value?: string) =>
+  !value || /^[\+]?[\d\s\-\(\)\.]{7,25}$/.test(value);
+
 const userSchema = new Schema<IUser>({
   name: {
     type: String,
@@ -42,7 +45,12 @@ const userSchema = new Schema<IUser>({
   },
   phone: {
     type: String,
-    required: false
+    trim: true,
+    required: false,
+    validate: {
+      validator: optionalInternationalPhone,
+      message: 'Please enter a valid international phone number'
+    }
   },
   canWorkFromHome: { 
     type: Boolean, 
