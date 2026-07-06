@@ -50,18 +50,25 @@ const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   const type = getStringQuery(req.query.type);
   const nextPageToken = getStringQuery(req.query.nextPageToken);
   const pageSize = getNumberQuery(req.query.pageSize);
+  const maxPages = getNumberQuery(req.query.maxPages);
 
   if (from) query.from = from;
   if (to) query.to = to;
   if (type) query.type = type;
   if (nextPageToken) query.nextPageToken = nextPageToken;
   if (pageSize) query.pageSize = pageSize;
+  if (maxPages) query.maxPages = maxPages;
 
   return query;
 };
 
-const getRecordingIdentity = (recording: { id?: string; call_id?: string; call_log_id?: string }) =>
-  recording.id || recording.call_id || recording.call_log_id || '';
+const getRecordingIdentity = (recording: {
+  id?: string;
+  call_id?: string;
+  call_log_id?: string;
+  call_history_id?: string;
+  call_element_id?: string;
+}) => recording.id || recording.call_id || recording.call_log_id || recording.call_history_id || recording.call_element_id || '';
 
 const findLeadRecording = async (lead: ILead, req: Request) => {
   const requestedRecordingId = req.params.recordingId;
@@ -103,6 +110,70 @@ export const getAccountZoomCallLogs = async (req: Request, res: Response): Promi
     res.status(200).json({
       success: true,
       message: 'Zoom Phone account call logs retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const getAccountZoomRecordings = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const data = await zoomPhoneService.getAccountRecordings(getZoomQuery(req));
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone account recordings retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const getAccountZoomInventory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const data = await zoomPhoneService.getAccountInventory(getZoomQuery(req));
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone inventory retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const getAccountZoomLiveStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const data = await zoomPhoneService.getAccountLiveStatus(getZoomQuery(req));
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone live status retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const getAccountZoomAnalytics = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const data = await zoomPhoneService.getAccountAnalytics(getZoomQuery(req));
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone analytics retrieved successfully',
       data
     });
   } catch (error) {
@@ -187,6 +258,50 @@ export const streamLeadZoomRecording = async (req: Request, res: Response): Prom
     const zoomResponse = await zoomPhoneService.downloadRecording(
       req.params.recordingId,
       recording.download_url || recording.file_url || getStringQuery(req.query.downloadUrl)
+    );
+
+    res.setHeader('Content-Type', zoomResponse.headers.get('content-type') || 'audio/mpeg');
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.setHeader('Content-Disposition', `inline; filename="zoom-phone-recording-${req.params.recordingId}.mp3"`);
+
+    const contentLength = zoomResponse.headers.get('content-length');
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
+
+    if (!zoomResponse.body) {
+      res.status(502).json({
+        success: false,
+        message: 'Zoom recording response did not include audio content'
+      });
+      return;
+    }
+
+    const stream = Readable.fromWeb(zoomResponse.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.status(502).json({
+          success: false,
+          message: 'Failed to stream Zoom recording'
+        });
+        return;
+      }
+      res.end();
+    });
+    stream.pipe(res);
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const streamAccountZoomRecording = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const zoomResponse = await zoomPhoneService.downloadRecording(
+      req.params.recordingId,
+      getStringQuery(req.query.downloadUrl)
     );
 
     res.setHeader('Content-Type', zoomResponse.headers.get('content-type') || 'audio/mpeg');
