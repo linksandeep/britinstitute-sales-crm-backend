@@ -17,8 +17,15 @@ declare global {
 
 export const authenticateToken = (req: Request, res: Response, next: NextFunction): void => {
   try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    // Check for token in Authorization header first
+    let token = req.headers.authorization?.split(' ')[1];
+    
+    // If not in header, check query params (for audio streaming from browser <audio> tag)
+    if (!token && req.query.token) {
+      token = req.query.token as string;
+      // Set it in the header for subsequent middleware
+      req.headers.authorization = `Bearer ${token}`;
+    }
 
     if (!token) {
       res.status(401).json({
@@ -79,6 +86,9 @@ export const authenticateToken = (req: Request, res: Response, next: NextFunctio
     });
   }
 };
+
+// Alias for authenticateToken that also checks query params (same functionality now)
+export const authenticateTokenWithQuery = authenticateToken;
 
 export const requireAdmin = (req: Request, res: Response, next: NextFunction): void => {
   if (!req.user) {

@@ -37,6 +37,64 @@ const getLeadForRequest = async (req: Request, res: Response): Promise<ILead | n
 
 const getStringQuery = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
 
+const getAudioDisposition = (req: Request, recordingId: string) => {
+  const mode = getStringQuery(req.query.disposition);
+  const disposition = mode === 'attachment' ? 'attachment' : 'inline';
+  const filename = `zoom-phone-recording-${recordingId.replace(/[^a-zA-Z0-9._-]/g, '-')}.mp3`;
+  return `${disposition}; filename="${filename}"`;
+};
+
+const pipeZoomRecordingResponse = (req: Request, res: Response, zoomResponse: globalThis.Response) => {
+  const headersToForward = [
+    'content-type',
+    'content-length',
+    'content-range',
+    'accept-ranges',
+    'etag',
+    'last-modified'
+  ];
+
+  for (const header of headersToForward) {
+    const value = zoomResponse.headers.get(header);
+    if (value) {
+      res.setHeader(header, value);
+    }
+  }
+
+  if (!zoomResponse.headers.get('accept-ranges')) {
+    res.setHeader('Accept-Ranges', 'bytes');
+  }
+
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.setHeader('Content-Disposition', getAudioDisposition(req, req.params.recordingId));
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Length, Content-Range, Content-Type');
+  res.removeHeader('Content-Security-Policy');
+  res.status(zoomResponse.status);
+
+  if (!zoomResponse.body) {
+    res.status(502).json({
+      success: false,
+      message: 'Zoom recording response did not include audio content'
+    });
+    return;
+  }
+
+  const stream = Readable.fromWeb(zoomResponse.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.status(502).json({
+        success: false,
+        message: 'Failed to stream Zoom recording'
+      });
+      return;
+    }
+    res.end();
+  });
+  stream.pipe(res);
+};
+
 const getNumberQuery = (value: unknown) => {
   if (typeof value !== 'string' || !value.trim()) return undefined;
   const parsed = Number(value);
@@ -257,38 +315,11 @@ export const streamLeadZoomRecording = async (req: Request, res: Response): Prom
 
     const zoomResponse = await zoomPhoneService.downloadRecording(
       req.params.recordingId,
-      recording.download_url || recording.file_url || getStringQuery(req.query.downloadUrl)
+      recording.download_url || recording.file_url || getStringQuery(req.query.downloadUrl),
+      req.headers.range
     );
 
-    res.setHeader('Content-Type', zoomResponse.headers.get('content-type') || 'audio/mpeg');
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    res.setHeader('Content-Disposition', `inline; filename="zoom-phone-recording-${req.params.recordingId}.mp3"`);
-
-    const contentLength = zoomResponse.headers.get('content-length');
-    if (contentLength) {
-      res.setHeader('Content-Length', contentLength);
-    }
-
-    if (!zoomResponse.body) {
-      res.status(502).json({
-        success: false,
-        message: 'Zoom recording response did not include audio content'
-      });
-      return;
-    }
-
-    const stream = Readable.fromWeb(zoomResponse.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
-    stream.on('error', () => {
-      if (!res.headersSent) {
-        res.status(502).json({
-          success: false,
-          message: 'Failed to stream Zoom recording'
-        });
-        return;
-      }
-      res.end();
-    });
-    stream.pipe(res);
+    pipeZoomRecordingResponse(req, res, zoomResponse);
   } catch (error) {
     res.status(getStatusCode(error)).json({
       success: false,
@@ -297,42 +328,21 @@ export const streamLeadZoomRecording = async (req: Request, res: Response): Prom
   }
 };
 
-export const streamAccountZoomRecording = async (req: Request, res: Response): Promise<void> => {
+export const streamAccountZoomRecording = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
   try {
+    // The token is now handled by the middleware, so remove the manual check
+    // Just proceed with the streaming
+
     const zoomResponse = await zoomPhoneService.downloadRecording(
       req.params.recordingId,
-      getStringQuery(req.query.downloadUrl)
+      getStringQuery(req.query.downloadUrl),
+      req.headers.range
     );
 
-    res.setHeader('Content-Type', zoomResponse.headers.get('content-type') || 'audio/mpeg');
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    res.setHeader('Content-Disposition', `inline; filename="zoom-phone-recording-${req.params.recordingId}.mp3"`);
-
-    const contentLength = zoomResponse.headers.get('content-length');
-    if (contentLength) {
-      res.setHeader('Content-Length', contentLength);
-    }
-
-    if (!zoomResponse.body) {
-      res.status(502).json({
-        success: false,
-        message: 'Zoom recording response did not include audio content'
-      });
-      return;
-    }
-
-    const stream = Readable.fromWeb(zoomResponse.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
-    stream.on('error', () => {
-      if (!res.headersSent) {
-        res.status(502).json({
-          success: false,
-          message: 'Failed to stream Zoom recording'
-        });
-        return;
-      }
-      res.end();
-    });
-    stream.pipe(res);
+    pipeZoomRecordingResponse(req, res, zoomResponse);
   } catch (error) {
     res.status(getStatusCode(error)).json({
       success: false,

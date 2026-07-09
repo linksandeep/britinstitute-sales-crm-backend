@@ -1333,25 +1333,45 @@ const requestZoomJson = async <T>(endpoint: string, query?: Record<string, strin
   return (text ? JSON.parse(text) : {}) as T;
 };
 
-const requestZoomFile = async (urlOrEndpoint: string, retry = true): Promise<Response> => {
+const requestZoomFile = async (
+  urlOrEndpoint: string,
+  range?: string,
+  retry = true
+): Promise<Response> => {
   const token = await getZoomAccessToken();
+
   const isAbsolute = /^https?:\/\//i.test(urlOrEndpoint);
-  const url = isAbsolute ? urlOrEndpoint : `${ZOOM_API_BASE_URL}${urlOrEndpoint}`;
+  const url = isAbsolute
+    ? urlOrEndpoint
+    : `${ZOOM_API_BASE_URL}${urlOrEndpoint}`;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`
+  };
+
+  if (range) {
+    headers.Range = range;
+  }
 
   const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+    headers
   });
 
   if (response.status === 401 && retry) {
     tokenCache = null;
-    return requestZoomFile(urlOrEndpoint, false);
+    return requestZoomFile(urlOrEndpoint, range, false);
   }
 
-  if (!response.ok) {
+  if (!response.ok && response.status !== 206) {
     const details = await response.text();
-    const error = new Error(`Zoom recording download failed (${response.status}): ${details.slice(0, 300)}`);
+
+    const error = new Error(
+      `Zoom recording download failed (${response.status}): ${details.slice(
+        0,
+        300
+      )}`
+    );
+
     (error as Error & { statusCode?: number }).statusCode = response.status;
     throw error;
   }
@@ -1504,12 +1524,20 @@ export const zoomPhoneService = {
     };
   },
 
-  downloadRecording: async (recordingId: string, downloadUrl?: string) => {
+  downloadRecording: async (
+    recordingId: string,
+    downloadUrl?: string,
+    range?: string
+  ) => {
     const safeDownloadUrl = assertZoomDownloadUrl(downloadUrl);
+  
     if (safeDownloadUrl) {
-      return requestZoomFile(safeDownloadUrl);
+      return requestZoomFile(safeDownloadUrl, range);
     }
-
-    return requestZoomFile(`/phone/recording/download/${encodeURIComponent(recordingId)}`);
+  
+    return requestZoomFile(
+      `/phone/recording/download/${encodeURIComponent(recordingId)}`,
+      range
+    );
   }
 };
