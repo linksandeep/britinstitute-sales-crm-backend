@@ -185,12 +185,14 @@ export const corsOptions: CorsOptions = {
       allowedOrigins.push(process.env.FRONTEND_URL_WWW);
     } 
 
+    const isLocalNetworkDevOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(origin);
+
     if (process.env.NODE_ENV === 'development') {
       // In development, allow all origins
       return callback(null, true);
     }
 
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (allowedOrigins.indexOf(origin) !== -1 || isLocalNetworkDevOrigin) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));

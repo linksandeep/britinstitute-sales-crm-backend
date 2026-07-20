@@ -17,7 +17,8 @@ import {
   requestLogger,
   bodyParserErrorHandler,
   securityHeaders,
-  healthCheck
+  healthCheck,
+  corsOptions
 } from './middleware';
 import User from './models/User';
 
@@ -60,7 +61,7 @@ app.set('trust proxy', 1);
 app.use(helmet({
   crossOriginEmbedderPolicy: false // Allow embedding for development
 }));
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(securityHeaders);
 
 // Rate limiting - applies to all /api routes but skips authenticated users
