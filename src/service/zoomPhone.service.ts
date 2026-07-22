@@ -47,6 +47,7 @@ export interface ZoomPhoneCrmLeadMatch {
 export interface ZoomPhoneCallLog {
   id?: string;
   call_id?: string;
+  source?: 'call_log' | 'metrics' | 'recording';
   call_type?: string;
   direction?: string;
   duration?: number;
@@ -799,6 +800,7 @@ const buildCallLogFromRecording = (recording: ZoomPhoneRecording): ZoomPhoneCall
   const callLog = {
     id: recording.call_log_id || recording.call_history_id || recording.call_id || recording.id,
     call_id: recording.call_id,
+    source: 'recording' as const,
     direction: recording.direction,
     duration: recording.duration,
     date_time: recording.date_time,
@@ -814,6 +816,49 @@ const buildCallLogFromRecording = (recording: ZoomPhoneRecording): ZoomPhoneCall
     site: recording.site,
     matched_user: recording.matched_user,
     matched_lead: recording.matched_lead
+  };
+
+  return Object.fromEntries(
+    Object.entries(callLog).filter(([, value]) => value !== undefined && value !== '')
+  ) as ZoomPhoneCallLog;
+};
+
+const getMetricAgentParty = (call: ZoomPhoneMetricCall) => {
+  const direction = (call.direction || call.call_type || '').toLowerCase();
+  if (direction.includes('out')) return call.caller;
+  if (direction.includes('in')) return call.callee;
+  return call.caller || call.callee;
+};
+
+const buildCallLogFromMetric = (call: ZoomPhoneMetricCall): ZoomPhoneCallLog => {
+  const agentParty = getMetricAgentParty(call);
+  const callLog = {
+    id: call.call_id,
+    call_id: call.call_id,
+    source: 'metrics' as const,
+    call_type: call.call_type,
+    direction: call.direction,
+    duration: call.duration,
+    date_time: call.date_time,
+    caller_number: call.caller?.phone_number || call.caller?.extension_number,
+    callee_number: call.callee?.phone_number || call.callee?.extension_number,
+    caller_name: call.caller?.name,
+    callee_name: call.callee?.name,
+    result: call.result || call.status,
+    owner: call.owner || {
+      name: agentParty?.name,
+      extension_number: agentParty?.extension_number ? String(agentParty.extension_number) : undefined,
+      phone_number: agentParty?.phone_number
+    },
+    matched_user: call.matched_user,
+    site: call.owner
+      ? undefined
+      : agentParty?.site_id || agentParty?.site_name
+        ? {
+            id: agentParty.site_id,
+            name: agentParty.site_name
+          }
+        : undefined
   };
 
   return Object.fromEntries(
@@ -1112,10 +1157,16 @@ const buildAnalyticsResponse = (
     const matchedRecordings = getRecordingsForCall(call, recordingIndex);
     const recordingDownloadUrl = matchedRecordings[0]?.download_url || matchedRecordings[0]?.file_url;
     const startedAt = getCallStartedAt(call);
+    const isMetricsCallWithoutResult = call.source === 'metrics' && !call.result && !call.path;
+    const normalizedStatus = isMetricsCallWithoutResult
+      ? matchedRecordings.length > 0
+        ? 'Connected'
+        : 'Unknown'
+      : normalizeStatus(call);
     const normalizedCall: ZoomPhoneAnalyticsCall = {
       ...call,
       normalized_direction: normalizeDirection(call),
-      normalized_status: normalizeStatus(call),
+      normalized_status: normalizedStatus,
       agent_name: call.matched_user?.name || getCallAgentName(call),
       display_phone: call.matched_lead?.phone || getDisplayPhone(call),
       recording_count: matchedRecordings.length,
@@ -1424,11 +1475,19 @@ export const zoomPhoneService = {
   },
 
   getAccountAnalytics: async (query: ZoomPhoneQuery) => {
-    const [inventory, callLogPages] = await Promise.all([
+    const [inventory, metricPages] = await Promise.all([
       fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
-      fetchZoomPages<ZoomCallLogsResponse, ZoomPhoneCallLog>('/phone/call_logs', 'call_logs', query)
+      fetchZoomPages<ZoomPhoneMetricsResponse, ZoomPhoneMetricCall>('/phone/metrics/call_logs', 'call_logs', query)
     ]);
     const context = await buildCrmMatchContext(inventory);
+    let callLogs = metricPages.items.map((call) => buildCallLogFromMetric(enrichMetricCall(call, context)));
+    let pagesScanned = metricPages.pagesScanned;
+
+    if (callLogs.length === 0) {
+      const callLogPages = await fetchZoomPages<ZoomCallLogsResponse, ZoomPhoneCallLog>('/phone/call_logs', 'call_logs', query);
+      callLogs = callLogPages.items.map((call) => enrichZoomPhoneItem({ ...call, source: 'call_log' as const }, context));
+      pagesScanned = callLogPages.pagesScanned;
+    }
 
     let recordings: ZoomPhoneRecording[] = [];
     let recordingsError: string | undefined;
@@ -1446,9 +1505,9 @@ export const zoomPhoneService = {
 
     return buildAnalyticsResponse(
       query,
-      callLogPages.items.map((call) => enrichZoomPhoneItem(call, context)),
+      callLogs.map((call) => enrichZoomPhoneItem(call, context)),
       recordings.map((recording) => enrichZoomPhoneItem(recording, context)),
-      callLogPages.pagesScanned,
+      pagesScanned,
       recordingsError
     );
   },
