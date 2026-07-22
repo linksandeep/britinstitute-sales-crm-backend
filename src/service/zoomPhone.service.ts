@@ -20,6 +20,7 @@ export interface ZoomPhoneQuery {
   nextPageToken?: string;
   pageSize?: number;
   maxPages?: number;
+  includeRecordings?: boolean;
 }
 
 export interface ZoomPhoneOwner {
@@ -1463,7 +1464,16 @@ export const zoomPhoneService = {
   },
 
   getAccountRecordings: async (query: ZoomPhoneQuery) => {
-    return requestZoomJson<ZoomRecordingsResponse>('/phone/recordings', buildZoomQuery(query));
+    const [inventory, response] = await Promise.all([
+      fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
+      requestZoomJson<ZoomRecordingsResponse>('/phone/recordings', buildZoomQuery(query))
+    ]);
+    const context = await buildCrmMatchContext(inventory);
+
+    return {
+      ...response,
+      recordings: (response.recordings || []).map((recording) => enrichZoomPhoneItem(recording, context))
+    };
   },
 
   getAccountInventory: async (query: ZoomPhoneQuery) => {
@@ -1492,15 +1502,17 @@ export const zoomPhoneService = {
     let recordings: ZoomPhoneRecording[] = [];
     let recordingsError: string | undefined;
 
-    try {
-      const recordingPages = await fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
-        '/phone/recordings',
-        'recordings',
-        query
-      );
-      recordings = recordingPages.items;
-    } catch (error) {
-      recordingsError = error instanceof Error ? error.message : 'Unable to retrieve Zoom Phone recordings';
+    if (query.includeRecordings !== false) {
+      try {
+        const recordingPages = await fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
+          '/phone/recordings',
+          'recordings',
+          query
+        );
+        recordings = recordingPages.items;
+      } catch (error) {
+        recordingsError = error instanceof Error ? error.message : 'Unable to retrieve Zoom Phone recordings';
+      }
     }
 
     return buildAnalyticsResponse(

@@ -101,6 +101,14 @@ const getNumberQuery = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const getBooleanQuery = (value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (['true', '1', 'yes'].includes(normalized)) return true;
+  if (['false', '0', 'no'].includes(normalized)) return false;
+  return undefined;
+};
+
 const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   const query: ZoomPhoneQuery = {};
   const from = getStringQuery(req.query.from);
@@ -109,6 +117,7 @@ const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   const nextPageToken = getStringQuery(req.query.nextPageToken);
   const pageSize = getNumberQuery(req.query.pageSize);
   const maxPages = getNumberQuery(req.query.maxPages);
+  const includeRecordings = getBooleanQuery(req.query.includeRecordings);
 
   if (from) query.from = from;
   if (to) query.to = to;
@@ -116,6 +125,7 @@ const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   if (nextPageToken) query.nextPageToken = nextPageToken;
   if (pageSize) query.pageSize = pageSize;
   if (maxPages) query.maxPages = maxPages;
+  if (includeRecordings !== undefined) query.includeRecordings = includeRecordings;
 
   return query;
 };
