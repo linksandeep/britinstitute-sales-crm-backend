@@ -36,6 +36,7 @@ export interface ZoomPhoneCrmUserMatch {
   name: string;
   email?: string;
   phone?: string;
+  isActive?: boolean;
 }
 
 export interface ZoomPhoneCrmLeadMatch {
@@ -478,6 +479,7 @@ const buildUserMatch = (user: Record<string, unknown>): ZoomPhoneCrmUserMatch =>
   };
   const email = toTrimmedString(user.email);
   const phone = toTrimmedString(user.phone);
+  match.isActive = user.isActive !== false;
   if (email) match.email = email;
   if (phone) match.phone = phone;
   return match;
@@ -529,7 +531,7 @@ const findZoomAliasMatch = (values: Array<string | undefined>, context: CrmMatch
 
 const buildCrmMatchContext = async (inventory?: ZoomPhoneInventoryResponse): Promise<CrmMatchContext> => {
   const [users, leads] = await Promise.all([
-    User.find({ isActive: { $ne: false } }).select('_id name email phone').lean(),
+    User.find({}).select('_id name email phone isActive').lean(),
     Lead.find({}).select('_id name email phone whatsapp zoomPhoneNumber').lean()
   ]);
 
