@@ -37,6 +37,8 @@ const getLeadForRequest = async (req: Request, res: Response): Promise<ILead | n
 
 const getStringQuery = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
 
+const getStringBody = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : '');
+
 const getAudioDisposition = (req: Request, recordingId: string) => {
   const mode = getStringQuery(req.query.disposition);
   const disposition = mode === 'attachment' ? 'attachment' : 'inline';
@@ -210,6 +212,47 @@ export const getAccountZoomInventory = async (req: Request, res: Response): Prom
     res.status(200).json({
       success: true,
       message: 'Zoom Phone inventory retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const getZoomPhoneAssignments = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const activeOnly = getBooleanQuery(req.query.active) === true;
+    const data = await zoomPhoneService.getNumberAssignments(activeOnly);
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone number assignments retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const assignZoomPhoneNumber = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const input = {
+      userId: getStringBody(req.body?.userId),
+      phoneNumber: getStringBody(req.body?.phoneNumber)
+    };
+    const assignedAt = getStringBody(req.body?.assignedAt);
+    const data = await zoomPhoneService.assignNumberToUser(
+      assignedAt ? { ...input, assignedAt } : input
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone number assigned successfully',
       data
     });
   } catch (error) {

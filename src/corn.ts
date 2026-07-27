@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import reminder from './models/reminder';
 import { io } from './server';
+import { zoomPhoneService } from './service/zoomPhone.service';
 
 const shouldRunCron =
   !process.env.NODE_APP_INSTANCE ||
@@ -8,6 +9,26 @@ const shouldRunCron =
 
 if (shouldRunCron) {
   console.log('🕒 Reminder cron started');
+  console.log('☎️ Zoom Phone assignment sync cron started');
+
+  let zoomAssignmentSyncRunning = false;
+
+  cron.schedule(process.env.ZOOM_PHONE_ASSIGNMENT_SYNC_CRON || '*/5 * * * *', async () => {
+    if (zoomAssignmentSyncRunning) return;
+
+    try {
+      zoomAssignmentSyncRunning = true;
+      const status = zoomPhoneService.getStatus();
+      if (!status.configured) return;
+
+      await zoomPhoneService.getAccountInventory({ pageSize: 300, maxPages: 2 });
+      console.log('✅ Zoom Phone number assignment history synced');
+    } catch (error) {
+      console.error('🔥 ZOOM PHONE ASSIGNMENT SYNC ERROR:', error);
+    } finally {
+      zoomAssignmentSyncRunning = false;
+    }
+  });
 
   cron.schedule('* * * * *', async () => {
     try {

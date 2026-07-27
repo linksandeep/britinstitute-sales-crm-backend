@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  assignZoomPhoneNumber,
   getAccountZoomAnalytics,
   getAccountZoomCallLogs,
   getAccountZoomInventory,
@@ -8,6 +9,7 @@ import {
   getLeadCallLogRecordings,
   getLeadZoomCalls,
   getLeadZoomRecordings,
+  getZoomPhoneAssignments,
   getZoomPhoneStatus,
   streamAccountZoomRecording,
   streamLeadZoomRecording
@@ -28,6 +30,8 @@ router.get('/account/call-logs', requireAdmin, getAccountZoomCallLogs);
 router.get('/account/inventory', requireAdmin, getAccountZoomInventory);
 router.get('/account/live', requireAdmin, getAccountZoomLiveStatus);
 router.get('/account/recordings', requireAdmin, getAccountZoomRecordings);
+router.get('/assignments', requireAdmin, getZoomPhoneAssignments);
+router.post('/assignments', requireAdmin, assignZoomPhoneNumber);
 
 // Audio streaming route - uses the same authenticateToken but with query param support
 // The middleware now checks both header and query param
