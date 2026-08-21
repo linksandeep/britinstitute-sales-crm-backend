@@ -10,6 +10,7 @@ import type {
 import { assignLeadsService, getAdminLeadStatsService, getAllChatsService, getDuplicateAndUncategorizedCountService, getDuplicateLeadsService, getLeadsService, getMyLeadsService, importLeadsFromGoogleSheetService, searchLeadsService } from '../service/lead.service';
 import { sendError } from '../utils/sendError';
 import { getLeadDateFilter } from '../utils/leadDateFilter';
+import { sendMetaStatusFeedback } from '../service/makeMeta.service';
 
 
 
@@ -261,6 +262,8 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
+    const previousStatus = lead.status;
+
     // Check if user can update this lead
     if (req.user?.role !== 'admin' && String(lead.assignedTo) !== String(req.user?.userId)) {
       res.status(403).json({
@@ -342,6 +345,11 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
     });
 
     await lead.save({ validateModifiedOnly: true });
+
+    if (previousStatus !== lead.status && lead.metaLeadId) {
+      await sendMetaStatusFeedback(lead, previousStatus);
+    }
+
     // Populate the response
     await lead.populate('assignedToUser', 'name email');
     await lead.populate('assignedByUser', 'name email');
@@ -519,12 +527,19 @@ export const bulkUpdateStatus = async (req: Request, res: Response): Promise<voi
       return;
     }
 
+    const normalizedStatus = status.trim();
+    const feedbackCandidates = await Lead.find({
+      _id: { $in: leadIds },
+      metaLeadId: { $exists: true, $ne: '' },
+      status: { $ne: normalizedStatus },
+    });
+
     // Update leads' status
     const result = await Lead.updateMany(
       { _id: { $in: leadIds } },
       { 
         $set: { 
-          status: status.trim(),
+          status: normalizedStatus,
           // folder:status.trim(),
           updatedAt: new Date()
         }
@@ -535,6 +550,12 @@ export const bulkUpdateStatus = async (req: Request, res: Response): Promise<voi
     const updatedLeads = await Lead.find({ _id: { $in: leadIds } })
       .populate('assignedToUser', 'name email')
       .populate('assignedByUser', 'name email');
+
+    await Promise.all(feedbackCandidates.map(async (lead) => {
+      const previousStatus = lead.status;
+      lead.status = normalizedStatus;
+      await sendMetaStatusFeedback(lead, previousStatus);
+    }));
 
     res.status(200).json({
       success: true,

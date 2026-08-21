@@ -61,6 +61,13 @@ export interface ILead extends Document {
   adsetName?: string;     // Added
   adName?: string;        // Added
   metaLeadId?: string;
+  metaFormId?: string;
+  metaPageId?: string;
+  metaAdId?: string;
+  metaCreatedTime?: Date;
+  metaFeedbackLastStatus?: string;
+  metaFeedbackLastSentAt?: Date;
+  metaFeedbackLastError?: string;
   assignedTo?: mongoose.Types.ObjectId;
   assignedBy?: mongoose.Types.ObjectId;
 
@@ -103,7 +110,8 @@ export type LeadSource =
   | 'Cold Call'
   | 'Email Campaign'
   | 'strategy_call_modal'
-  | 'data_analytics_landing_page';
+  | 'data_analytics_landing_page'
+  | 'Meta';
 
 // LeadStatus is now dynamic - can be any string
 export type LeadStatus = string;
@@ -126,6 +134,10 @@ export interface CreateLeadInput {
   adsetName?: string;
   adName?: string;
   metaLeadId?: string;
+  metaFormId?: string;
+  metaPageId?: string;
+  metaAdId?: string;
+  metaCreatedTime?: Date;
 }
 
 export interface UpdateLeadInput {
@@ -149,6 +161,38 @@ export interface AssignLeadInput {
 export interface AddNoteInput {
   leadId: string;
   content: string;
+}
+
+export interface MakeMetaLeadInput {
+  metaLeadId: string;
+  name: string;
+  email: string;
+  phone: string;
+  whatsapp?: string;
+  position?: string;
+  folder?: string;
+  campaignName?: string;
+  adsetName?: string;
+  adName?: string;
+  formId?: string;
+  pageId?: string;
+  adId?: string;
+  createdTime?: string;
+}
+
+export interface MetaFeedbackPayload {
+  eventName: string;
+  eventTime: number;
+  leadId: string;
+  email: string;
+  phoneNumber: string;
+  leadEventSource: string;
+  crmLeadId: string;
+  status: string;
+  previousStatus?: string;
+  campaignName?: string;
+  adsetName?: string;
+  adName?: string;
 }
 
 // API Response Types

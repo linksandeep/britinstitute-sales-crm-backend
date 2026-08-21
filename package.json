@@ -13,7 +13,7 @@
     "find-duplicates": "tsx src/scripts/findDuplicates.ts",
     "backfill:ravikant-phone": "tsx src/scripts/backfillRavikantPhone.ts",
     "create-indexes": "tsx src/scripts/createIndexes.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsx --test src/service/makeMeta.service.test.ts"
   },
   "keywords": [
     "lead-management",

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { CorsOptions } from 'cors';
 import jwt from 'jsonwebtoken';
+import { hasValidMakeIntegrationKey } from './integrationAuth';
 
 // Error handling middleware
 export const errorHandler = (
@@ -115,6 +116,10 @@ export const createRateLimiter = (windowMs: number, max: number) => {
     // Skip rate limiting for logged-in users
     skip: (req: Request) => {
       try {
+        if (hasValidMakeIntegrationKey(req)) {
+          return true;
+        }
+
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
           return false;

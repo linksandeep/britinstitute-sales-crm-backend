@@ -81,7 +81,7 @@ const leadSchema = new Schema<ILead>({
   },
   source: {
     type: String,
-    enum: ['Website', 'Social Media', 'Referral', 'Import', 'Manual', 'Cold Call', 'Email Campaign', 'strategy_call_modal', 'data_analytics_landing_page'] as LeadSource[],
+    enum: ['Website', 'Social Media', 'Referral', 'Import', 'Manual', 'Cold Call', 'Email Campaign', 'strategy_call_modal', 'data_analytics_landing_page', 'Meta'] as LeadSource[],
     required: [true, 'Source is required'],
     default: 'Manual'
   },
@@ -104,6 +104,44 @@ const leadSchema = new Schema<ILead>({
     default: ''
   },
   metaLeadId: {
+    type: String,
+    trim: true,
+    required: false,
+    default: ''
+  },
+  metaFormId: {
+    type: String,
+    trim: true,
+    required: false,
+    default: ''
+  },
+  metaPageId: {
+    type: String,
+    trim: true,
+    required: false,
+    default: ''
+  },
+  metaAdId: {
+    type: String,
+    trim: true,
+    required: false,
+    default: ''
+  },
+  metaCreatedTime: {
+    type: Date,
+    required: false
+  },
+  metaFeedbackLastStatus: {
+    type: String,
+    trim: true,
+    required: false,
+    default: ''
+  },
+  metaFeedbackLastSentAt: {
+    type: Date,
+    required: false
+  },
+  metaFeedbackLastError: {
     type: String,
     trim: true,
     required: false,
@@ -180,6 +218,15 @@ const leadSchema = new Schema<ILead>({
 
 leadSchema.index({ email: 1 }, { unique: true });
 leadSchema.index({ phone: 1 }, { unique: true });
+leadSchema.index(
+  { metaLeadId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      metaLeadId: { $type: 'string', $gt: '' }
+    }
+  }
+);
 leadSchema.index({ zoomPhoneNumber: 1 }, { sparse: true });
 leadSchema.index({ status: 1 });
 leadSchema.index({ source: 1 });
@@ -424,10 +471,6 @@ leadSchema.pre<ILead>('save', function (next) {
   }
   next();
 });
-
-// Create indexes for better performance and uniqueness
-leadSchema.index({ email: 1 }, { unique: true });
-leadSchema.index({ phone: 1 }, { unique: true });
 
 // Static method to check for duplicates
 leadSchema.statics.findDuplicates = async function (email: string, phone: string, excludeId?: string) {
