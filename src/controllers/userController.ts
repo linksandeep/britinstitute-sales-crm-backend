@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import User from '../models/User';
+import ZoomPhoneNumberAssignment from '../models/ZoomPhoneNumberAssignment';
 import type { CreateUserInput } from '../types';
 
 const isValidOptionalPhone = (phone: unknown) =>
@@ -315,7 +316,10 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    await User.findByIdAndDelete(id);
+    await Promise.all([
+      User.findByIdAndDelete(id),
+      ZoomPhoneNumberAssignment.deleteMany({ crmUser: id })
+    ]);
 
     res.status(200).json({
       success: true,

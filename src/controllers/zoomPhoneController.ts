@@ -37,6 +37,8 @@ const getLeadForRequest = async (req: Request, res: Response): Promise<ILead | n
 
 const getStringQuery = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
 
+const getStringBody = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : '');
+
 const getAudioDisposition = (req: Request, recordingId: string) => {
   const mode = getStringQuery(req.query.disposition);
   const disposition = mode === 'attachment' ? 'attachment' : 'inline';
@@ -101,6 +103,14 @@ const getNumberQuery = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const getBooleanQuery = (value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (['true', '1', 'yes'].includes(normalized)) return true;
+  if (['false', '0', 'no'].includes(normalized)) return false;
+  return undefined;
+};
+
 const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   const query: ZoomPhoneQuery = {};
   const from = getStringQuery(req.query.from);
@@ -109,6 +119,7 @@ const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   const nextPageToken = getStringQuery(req.query.nextPageToken);
   const pageSize = getNumberQuery(req.query.pageSize);
   const maxPages = getNumberQuery(req.query.maxPages);
+  const includeRecordings = getBooleanQuery(req.query.includeRecordings);
 
   if (from) query.from = from;
   if (to) query.to = to;
@@ -116,6 +127,7 @@ const getZoomQuery = (req: Request): ZoomPhoneQuery => {
   if (nextPageToken) query.nextPageToken = nextPageToken;
   if (pageSize) query.pageSize = pageSize;
   if (maxPages) query.maxPages = maxPages;
+  if (includeRecordings !== undefined) query.includeRecordings = includeRecordings;
 
   return query;
 };
@@ -200,6 +212,47 @@ export const getAccountZoomInventory = async (req: Request, res: Response): Prom
     res.status(200).json({
       success: true,
       message: 'Zoom Phone inventory retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const getZoomPhoneAssignments = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const activeOnly = getBooleanQuery(req.query.active) === true;
+    const data = await zoomPhoneService.getNumberAssignments(activeOnly);
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone number assignments retrieved successfully',
+      data
+    });
+  } catch (error) {
+    res.status(getStatusCode(error)).json({
+      success: false,
+      message: getErrorMessage(error)
+    });
+  }
+};
+
+export const assignZoomPhoneNumber = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const input = {
+      userId: getStringBody(req.body?.userId),
+      phoneNumber: getStringBody(req.body?.phoneNumber)
+    };
+    const assignedAt = getStringBody(req.body?.assignedAt);
+    const data = await zoomPhoneService.assignNumberToUser(
+      assignedAt ? { ...input, assignedAt } : input
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Zoom Phone number assigned successfully',
       data
     });
   } catch (error) {

@@ -1,5 +1,6 @@
 import Lead from '../models/Lead';
 import User from '../models/User';
+import ZoomPhoneNumberAssignment from '../models/ZoomPhoneNumberAssignment';
 import type { ILead } from '../types';
 
 const ZOOM_API_BASE_URL = 'https://api.zoom.us/v2';
@@ -20,11 +21,13 @@ export interface ZoomPhoneQuery {
   nextPageToken?: string;
   pageSize?: number;
   maxPages?: number;
+  includeRecordings?: boolean;
 }
 
 export interface ZoomPhoneOwner {
   id?: string;
   name?: string;
+  email?: string;
   extension_number?: string;
   phone_number?: string;
   type?: string;
@@ -35,6 +38,9 @@ export interface ZoomPhoneCrmUserMatch {
   name: string;
   email?: string;
   phone?: string;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ZoomPhoneCrmLeadMatch {
@@ -47,6 +53,7 @@ export interface ZoomPhoneCrmLeadMatch {
 export interface ZoomPhoneCallLog {
   id?: string;
   call_id?: string;
+  source?: 'call_log' | 'metrics' | 'recording';
   call_type?: string;
   direction?: string;
   duration?: number;
@@ -59,6 +66,9 @@ export interface ZoomPhoneCallLog {
   callee_did_number?: string;
   caller_phone_number?: string;
   callee_phone_number?: string;
+  caller_email?: string;
+  callee_email?: string;
+  user_email?: string;
   caller_name?: string;
   callee_name?: string;
   result?: string;
@@ -85,6 +95,9 @@ export interface ZoomPhoneRecording {
   caller_number_type?: string;
   callee_number?: string;
   callee_number_type?: string;
+  caller_email?: string;
+  callee_email?: string;
+  user_email?: string;
   caller_name?: string;
   callee_name?: string;
   direction?: string;
@@ -208,6 +221,7 @@ export interface ZoomPhoneInventoryResponse {
 export interface ZoomPhoneMetricParty {
   phone_number?: string;
   extension_number?: string;
+  email?: string;
   device_type?: string;
   site_id?: string;
   site_name?: string;
@@ -324,6 +338,36 @@ export interface ZoomPhoneAnalyticsResponse {
   direction_breakdown: ZoomPhoneAnalyticsBreakdown[];
 }
 
+export type ZoomPhoneNumberAssignmentSource = 'zoom_inventory' | 'crm_backfill' | 'manual';
+
+export interface ZoomPhoneNumberAssignmentRecord {
+  id: string;
+  normalizedNumber: string;
+  displayNumber?: string;
+  zoomNumberId?: string;
+  zoomPhoneUserId?: string;
+  zoomPhoneUserEmail?: string;
+  zoomPhoneUserName?: string;
+  crmUser: string;
+  crmUserEmail: string;
+  crmUserName: string;
+  assignedAt: string;
+  releasedAt?: string;
+  source: ZoomPhoneNumberAssignmentSource;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ZoomPhoneNumberAssignmentsResponse {
+  assignments: ZoomPhoneNumberAssignmentRecord[];
+}
+
+export interface AssignZoomPhoneNumberInput {
+  userId: string;
+  phoneNumber: string;
+  assignedAt?: string;
+}
+
 interface ZoomTokenResponse {
   access_token?: string;
   expires_in?: number;
@@ -352,6 +396,8 @@ const getNumberValue = (value: string | undefined, fallback: number, min: number
 const toDateParam = (date: Date) => date.toISOString().slice(0, 10);
 
 const isDateParam = (value: string | undefined) => Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value));
+
+const toSafeString = (value: unknown) => (value == null ? '' : String(value));
 
 const buildDateRange = (query: ZoomPhoneQuery) => {
   const today = new Date();
@@ -392,9 +438,9 @@ const buildAnalyticsMaxPages = (maxPages?: number) => {
   return Math.min(Math.max(requested, 1), configuredMax, 20);
 };
 
-export const normalizePhoneNumber = (value?: string) => (value || '').replace(/\D/g, '');
+export const normalizePhoneNumber = (value?: unknown) => toSafeString(value).replace(/\D/g, '');
 
-const comparableNumbers = (value?: string) => {
+const comparableNumbers = (value?: unknown) => {
   const normalized = normalizePhoneNumber(value);
   if (!normalized) return [];
   const variants = new Set([normalized]);
@@ -450,23 +496,46 @@ const phoneMatchesLead = (item: ZoomPhoneCallLog | ZoomPhoneRecording, leadNumbe
 
 type CrmNumberMatch<TMatch> = {
   numbers: string[];
-  searchText: string;
   match: TMatch;
 };
 
+type CrmEmailMatch<TMatch> = {
+  email: string;
+  match: TMatch;
+};
+
+type ZoomPhoneAssignmentUserMatch = {
+  user: ZoomPhoneCrmUserMatch;
+  assignedAt: Date;
+  releasedAt?: Date;
+};
+
 interface CrmMatchContext {
-  users: CrmNumberMatch<ZoomPhoneCrmUserMatch>[];
+  users: CrmEmailMatch<ZoomPhoneCrmUserMatch>[];
+  numberAssignments: CrmNumberMatch<ZoomPhoneAssignmentUserMatch>[];
   leads: CrmNumberMatch<ZoomPhoneCrmLeadMatch>[];
   zoomUserAliases: Map<string, ZoomPhoneCrmUserMatch>;
 }
 
-const toTrimmedString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+const toTrimmedString = (value: unknown) => toSafeString(value).trim();
 
 const toIdString = (value: unknown) => {
   if (!value) return '';
   if (typeof value === 'string') return value;
   if (typeof value === 'object' && value !== null && 'toString' in value) return String(value);
   return '';
+};
+
+const toIsoString = (value: unknown) => {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+};
+
+const toDateValue = (value?: string | Date) => {
+  if (!value) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 };
 
 const buildUserMatch = (user: Record<string, unknown>): ZoomPhoneCrmUserMatch => {
@@ -476,8 +545,13 @@ const buildUserMatch = (user: Record<string, unknown>): ZoomPhoneCrmUserMatch =>
   };
   const email = toTrimmedString(user.email);
   const phone = toTrimmedString(user.phone);
+  const createdAt = toIsoString(user.createdAt);
+  const updatedAt = toIsoString(user.updatedAt);
+  match.isActive = user.isActive !== false;
   if (email) match.email = email;
   if (phone) match.phone = phone;
+  if (createdAt) match.createdAt = createdAt;
+  if (updatedAt) match.updatedAt = updatedAt;
   return match;
 };
 
@@ -495,15 +569,23 @@ const buildLeadMatch = (lead: Record<string, unknown>): ZoomPhoneCrmLeadMatch =>
 
 const buildNumberMatch = <TMatch>(
   values: Array<string | undefined>,
-  searchValues: Array<string | undefined>,
   match: TMatch
 ): CrmNumberMatch<TMatch> => ({
   match,
-  numbers: Array.from(new Set(values.flatMap(comparableNumbers))).filter(Boolean),
-  searchText: searchValues.filter(Boolean).join(' ').toLowerCase()
+  numbers: Array.from(new Set(values.flatMap(comparableNumbers))).filter(Boolean)
 });
 
-const normalizeAliasKey = (value?: string) => String(value || '').toLowerCase().replace(/[^a-z0-9@.+]/g, '');
+const normalizeEmail = (value?: unknown) => toSafeString(value).trim().toLowerCase();
+
+const buildEmailMatch = <TMatch>(
+  email: string | undefined,
+  match: TMatch
+): CrmEmailMatch<TMatch> | undefined => {
+  const normalizedEmail = normalizeEmail(email);
+  return normalizedEmail ? { email: normalizedEmail, match } : undefined;
+};
+
+const normalizeAliasKey = (value?: unknown) => toSafeString(value).toLowerCase().replace(/[^a-z0-9@.+]/g, '');
 
 const addZoomAlias = (
   aliases: Map<string, ZoomPhoneCrmUserMatch>,
@@ -525,23 +607,275 @@ const findZoomAliasMatch = (values: Array<string | undefined>, context: CrmMatch
   return undefined;
 };
 
+const findEmailMatch = <TMatch>(
+  values: Array<string | undefined>,
+  matches: CrmEmailMatch<TMatch>[]
+): TMatch | undefined => {
+  const normalizedValues = Array.from(new Set(values.map(normalizeEmail).filter(Boolean)));
+  if (normalizedValues.length === 0) return undefined;
+
+  return matches.find((candidate) => normalizedValues.includes(candidate.email))?.match;
+};
+
+const getAssignmentStartDate = (match: ZoomPhoneCrmUserMatch, now: Date) => {
+  const createdAt = toDateValue(match.createdAt);
+  return createdAt && createdAt.getTime() <= now.getTime() ? createdAt : now;
+};
+
+const assignmentUserPayload = (match: ZoomPhoneCrmUserMatch) => ({
+  crmUser: match.id,
+  crmUserEmail: normalizeEmail(match.email),
+  crmUserName: match.name
+});
+
+const isDuplicateKeyError = (error: unknown) =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code?: number }).code === 11000;
+
+type ZoomPhoneNumberAssignmentLike = {
+  _id?: unknown;
+  normalizedNumber?: string;
+  displayNumber?: string;
+  zoomNumberId?: string;
+  zoomPhoneUserId?: string;
+  zoomPhoneUserEmail?: string;
+  zoomPhoneUserName?: string;
+  crmUser?: unknown;
+  crmUserEmail?: string;
+  crmUserName?: string;
+  assignedAt?: Date;
+  releasedAt?: Date;
+  source?: ZoomPhoneNumberAssignmentSource;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
+
+const serializeZoomPhoneNumberAssignment = (
+  assignment: ZoomPhoneNumberAssignmentLike
+): ZoomPhoneNumberAssignmentRecord => {
+  const record: ZoomPhoneNumberAssignmentRecord = {
+    id: toIdString(assignment._id),
+    normalizedNumber: assignment.normalizedNumber || '',
+    crmUser: toIdString(assignment.crmUser),
+    crmUserEmail: assignment.crmUserEmail || '',
+    crmUserName: assignment.crmUserName || '',
+    assignedAt: toIsoString(assignment.assignedAt),
+    source: assignment.source || 'zoom_inventory'
+  };
+
+  const displayNumber = toTrimmedString(assignment.displayNumber);
+  const zoomNumberId = toTrimmedString(assignment.zoomNumberId);
+  const zoomPhoneUserId = toTrimmedString(assignment.zoomPhoneUserId);
+  const zoomPhoneUserEmail = normalizeEmail(assignment.zoomPhoneUserEmail);
+  const zoomPhoneUserName = toTrimmedString(assignment.zoomPhoneUserName);
+  const releasedAt = toIsoString(assignment.releasedAt);
+  const createdAt = toIsoString(assignment.createdAt);
+  const updatedAt = toIsoString(assignment.updatedAt);
+
+  if (displayNumber) record.displayNumber = displayNumber;
+  if (zoomNumberId) record.zoomNumberId = zoomNumberId;
+  if (zoomPhoneUserId) record.zoomPhoneUserId = zoomPhoneUserId;
+  if (zoomPhoneUserEmail) record.zoomPhoneUserEmail = zoomPhoneUserEmail;
+  if (zoomPhoneUserName) record.zoomPhoneUserName = zoomPhoneUserName;
+  if (releasedAt) record.releasedAt = releasedAt;
+  if (createdAt) record.createdAt = createdAt;
+  if (updatedAt) record.updatedAt = updatedAt;
+
+  return record;
+};
+
+const buildAssignmentDisplayNumber = (value: string) => {
+  const trimmed = value.trim();
+  return trimmed.startsWith('+') ? trimmed : `+${normalizePhoneNumber(trimmed)}`;
+};
+
+const assertValidAssignmentDate = (value?: string) => {
+  const assignedAt = toDateValue(value) || new Date();
+  if (assignedAt.getTime() > Date.now() + 60_000) {
+    const error = new Error('Assignment date cannot be in the future');
+    (error as Error & { statusCode?: number }).statusCode = 400;
+    throw error;
+  }
+  return assignedAt;
+};
+
+const getInventoryNumberDetails = (phoneUser: ZoomPhoneUser, inventory: ZoomPhoneInventoryResponse) => {
+  const directNumbers = (phoneUser.phone_numbers || []).map((phoneNumber) => ({
+    displayNumber: phoneNumber.display_number || phoneNumber.number || '',
+    zoomNumberId: phoneNumber.id
+  }));
+  const assignedNumbers = inventory.phone_numbers
+    .filter((phoneNumber) => {
+      const assignee = phoneNumber.assignee;
+      if (!assignee) return false;
+      return (
+        assignee.id === phoneUser.id ||
+        assignee.id === phoneUser.phone_user_id ||
+        assignee.extension_number === phoneUser.extension_number ||
+        assignee.name === phoneUser.name
+      );
+    })
+    .map((phoneNumber) => ({
+      displayNumber: phoneNumber.display_number || phoneNumber.number || '',
+      zoomNumberId: phoneNumber.id
+    }));
+
+  const byNumber = new Map<string, { displayNumber: string; zoomNumberId?: string }>();
+  [...directNumbers, ...assignedNumbers].forEach((item) => {
+    const normalizedNumber = normalizePhoneNumber(item.displayNumber);
+    if (!normalizedNumber || byNumber.has(normalizedNumber)) return;
+    const detail: { displayNumber: string; zoomNumberId?: string } = {
+      displayNumber: item.displayNumber
+    };
+    if (item.zoomNumberId) detail.zoomNumberId = item.zoomNumberId;
+    byNumber.set(normalizedNumber, detail);
+  });
+
+  return Array.from(byNumber.entries()).map(([normalizedNumber, detail]) => ({
+    normalizedNumber,
+    ...detail
+  }));
+};
+
+const syncZoomPhoneNumberAssignments = async (
+  inventory: ZoomPhoneInventoryResponse | undefined,
+  userEmailMatches: CrmEmailMatch<ZoomPhoneCrmUserMatch>[],
+  userNumberMatches: CrmNumberMatch<ZoomPhoneCrmUserMatch>[]
+) => {
+  if (!inventory) return;
+
+  const now = new Date();
+  const currentAssignments = new Map<
+    string,
+    {
+      detail: { normalizedNumber: string; displayNumber: string; zoomNumberId?: string };
+      phoneUser: ZoomPhoneUser;
+      match: ZoomPhoneCrmUserMatch;
+    }
+  >();
+
+  inventory.users.forEach((phoneUser) => {
+    const matchedUser = findEmailMatch([phoneUser.email], userEmailMatches);
+    if (!matchedUser) return;
+
+    getInventoryNumberDetails(phoneUser, inventory).forEach((detail) => {
+      currentAssignments.set(detail.normalizedNumber, {
+        detail,
+        phoneUser,
+        match: matchedUser
+      });
+    });
+  });
+
+  for (const { detail, phoneUser, match } of currentAssignments.values()) {
+    const activeAssignment = await ZoomPhoneNumberAssignment.findOne({
+      normalizedNumber: detail.normalizedNumber,
+      releasedAt: { $exists: false }
+    }).lean();
+    const activeUserId = activeAssignment?.crmUser ? String(activeAssignment.crmUser) : '';
+    const assignmentStart =
+      activeAssignment && activeUserId !== match.id ? now : getAssignmentStartDate(match, now);
+
+    if (activeAssignment && activeUserId && activeUserId !== match.id) {
+      await ZoomPhoneNumberAssignment.updateOne(
+        { _id: activeAssignment._id },
+        { $set: { releasedAt: assignmentStart } }
+      );
+    }
+
+    const payload = assignmentUserPayload(match);
+    const activeAssignmentFilter = {
+      normalizedNumber: detail.normalizedNumber,
+      releasedAt: { $exists: false }
+    };
+    const activeAssignmentUpdate = {
+      $setOnInsert: {
+        normalizedNumber: detail.normalizedNumber,
+        assignedAt: assignmentStart,
+        source: 'zoom_inventory'
+      },
+      $set: {
+        displayNumber: detail.displayNumber,
+        zoomNumberId: detail.zoomNumberId,
+        zoomPhoneUserId: phoneUser.id || phoneUser.phone_user_id,
+        zoomPhoneUserEmail: normalizeEmail(phoneUser.email),
+        zoomPhoneUserName: phoneUser.name,
+        ...payload
+      }
+    };
+
+    try {
+      await ZoomPhoneNumberAssignment.findOneAndUpdate(
+        activeAssignmentFilter,
+        activeAssignmentUpdate,
+        { upsert: true, new: true }
+      );
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+
+      await ZoomPhoneNumberAssignment.updateOne(activeAssignmentFilter, { $set: activeAssignmentUpdate.$set });
+    }
+
+    await ZoomPhoneNumberAssignment.updateMany(
+      {
+        normalizedNumber: detail.normalizedNumber,
+        crmUser: { $ne: match.id },
+        releasedAt: { $exists: false }
+      },
+      { $set: { releasedAt: assignmentStart } }
+    );
+
+    const previousUsers = userNumberMatches
+      .filter((candidate) =>
+        candidate.match.id !== match.id &&
+        candidate.match.isActive === false &&
+        candidate.numbers.some((candidateNumber) => phoneVariantsMatch(candidateNumber, detail.normalizedNumber))
+      )
+      .map((candidate) => candidate.match);
+
+    for (const previousUser of previousUsers) {
+      const previousAssignedAt = getAssignmentStartDate(previousUser, assignmentStart);
+      if (previousAssignedAt.getTime() >= assignmentStart.getTime()) continue;
+
+      const previousPayload = assignmentUserPayload(previousUser);
+      await ZoomPhoneNumberAssignment.updateOne(
+        {
+          normalizedNumber: detail.normalizedNumber,
+          crmUser: previousUser.id,
+          releasedAt: assignmentStart
+        },
+        {
+          $setOnInsert: {
+            normalizedNumber: detail.normalizedNumber,
+            displayNumber: detail.displayNumber,
+            zoomNumberId: detail.zoomNumberId,
+            assignedAt: previousAssignedAt,
+            releasedAt: assignmentStart,
+            source: 'crm_backfill',
+            ...previousPayload
+          }
+        },
+        { upsert: true }
+      );
+    }
+  }
+};
+
 const buildCrmMatchContext = async (inventory?: ZoomPhoneInventoryResponse): Promise<CrmMatchContext> => {
   const [users, leads] = await Promise.all([
-    User.find({ isActive: { $ne: false } }).select('_id name email phone').lean(),
+    User.find({}).select('_id name email phone isActive createdAt updatedAt').lean(),
     Lead.find({}).select('_id name email phone whatsapp zoomPhoneNumber').lean()
   ]);
 
-  const userMatches = users
-    .map((user) => {
-      const record = user as Record<string, unknown>;
-      const match = buildUserMatch(record);
-      return buildNumberMatch(
-        [toTrimmedString(record.phone)],
-        [match.name, match.email, match.phone],
-        match
-      );
-    })
-    .filter((item) => item.numbers.length > 0 || item.searchText.length > 0);
+  const crmUsers = users.map((user) => buildUserMatch(user as Record<string, unknown>));
+  const userMatches = crmUsers
+    .map((match) => buildEmailMatch(match.email, match))
+    .filter((item): item is CrmEmailMatch<ZoomPhoneCrmUserMatch> => Boolean(item));
+  const userNumberMatches = crmUsers
+    .map((match) => buildNumberMatch([match.phone], match))
+    .filter((item) => item.numbers.length > 0);
 
   const leadMatches = leads
     .map((lead) => {
@@ -553,44 +887,54 @@ const buildCrmMatchContext = async (inventory?: ZoomPhoneInventoryResponse): Pro
           toTrimmedString(record.whatsapp),
           toTrimmedString(record.zoomPhoneNumber)
         ],
-        [match.name, match.email, match.phone],
         match
       );
     })
-    .filter((item) => item.numbers.length > 0 || item.searchText.length > 0);
+    .filter((item) => item.numbers.length > 0);
+
+  await syncZoomPhoneNumberAssignments(inventory, userMatches, userNumberMatches);
+
+  const crmUsersById = new Map(crmUsers.map((match) => [match.id, match]));
+  const assignments = await ZoomPhoneNumberAssignment.find({}).lean();
+  const orphanedAssignmentIds = assignments
+    .filter((assignment) => !crmUsersById.has(String(assignment.crmUser)))
+    .map((assignment) => assignment._id);
+
+  if (orphanedAssignmentIds.length > 0) {
+    await ZoomPhoneNumberAssignment.deleteMany({ _id: { $in: orphanedAssignmentIds } });
+  }
+
+  const numberAssignments = assignments
+    .filter((assignment) => crmUsersById.has(String(assignment.crmUser)))
+    .map((assignment) => {
+      const crmUserId = String(assignment.crmUser);
+      const assignmentUser = crmUsersById.get(crmUserId);
+      if (!assignmentUser) return undefined;
+      const assignmentMatch: ZoomPhoneAssignmentUserMatch = {
+        user: assignmentUser,
+        assignedAt: assignment.assignedAt
+      };
+      if (assignment.releasedAt) assignmentMatch.releasedAt = assignment.releasedAt;
+      return buildNumberMatch([assignment.normalizedNumber, assignment.displayNumber], assignmentMatch);
+    })
+    .filter((item): item is CrmNumberMatch<ZoomPhoneAssignmentUserMatch> => Boolean(item))
+    .filter((item) => item.numbers.length > 0);
 
   const zoomUserAliases = new Map<string, ZoomPhoneCrmUserMatch>();
 
   if (inventory) {
     inventory.users.forEach((phoneUser) => {
-      const connectedNumbers = getInventoryUserNumbers(phoneUser, inventory);
-      const matchedUser =
-        findPhoneMatch(connectedNumbers, userMatches) ||
-        findTextMatch([phoneUser.email], userMatches);
+      const matchedUser = findEmailMatch([phoneUser.email], userMatches);
 
       addZoomAlias(zoomUserAliases, phoneUser.id, matchedUser);
       addZoomAlias(zoomUserAliases, phoneUser.phone_user_id, matchedUser);
       addZoomAlias(zoomUserAliases, phoneUser.email, matchedUser);
-      addZoomAlias(zoomUserAliases, phoneUser.name, matchedUser);
-      addZoomAlias(zoomUserAliases, phoneUser.extension_number, matchedUser);
-      connectedNumbers.forEach((number) => addZoomAlias(zoomUserAliases, number, matchedUser));
-    });
-
-    inventory.phone_numbers.forEach((phoneNumber) => {
-      const matchedUser = findPhoneMatch(
-        [phoneNumber.display_number, phoneNumber.number],
-        userMatches
-      );
-      addZoomAlias(zoomUserAliases, phoneNumber.assignee?.id, matchedUser);
-      addZoomAlias(zoomUserAliases, phoneNumber.assignee?.name, matchedUser);
-      addZoomAlias(zoomUserAliases, phoneNumber.assignee?.extension_number, matchedUser);
-      addZoomAlias(zoomUserAliases, phoneNumber.display_number, matchedUser);
-      addZoomAlias(zoomUserAliases, phoneNumber.number, matchedUser);
     });
   }
 
   return {
     users: userMatches,
+    numberAssignments,
     leads: leadMatches,
     zoomUserAliases
   };
@@ -614,35 +958,121 @@ const findPhoneMatch = <TMatch>(
   )?.match;
 };
 
-const findTextMatch = <TMatch>(values: Array<string | undefined>, matches: CrmNumberMatch<TMatch>[]): TMatch | undefined => {
-  const normalizedValues = values.map((value) => (value || '').trim().toLowerCase()).filter(Boolean);
-  if (normalizedValues.length === 0) return undefined;
+const getZoomRecordDate = (item: ZoomPhoneCallLog | ZoomPhoneRecording | ZoomPhoneMetricCall) =>
+  item.date_time ||
+  (item as ZoomPhoneCallLog).answer_start_time ||
+  (item as ZoomPhoneCallLog).call_end_time ||
+  (item as ZoomPhoneRecording).end_time ||
+  '';
 
-  return matches.find((candidate) =>
-    Boolean(candidate.searchText) &&
-    normalizedValues.some((value) => candidate.searchText.includes(value) || value.includes(candidate.searchText))
-  )?.match;
+const getZoomRecordTimestamp = (item: ZoomPhoneCallLog | ZoomPhoneRecording | ZoomPhoneMetricCall) => {
+  const recordDate = getZoomRecordDate(item);
+  if (!recordDate) return undefined;
+  const timestamp = new Date(recordDate).getTime();
+  return Number.isNaN(timestamp) ? undefined : timestamp;
 };
 
-const getAgentIdentityTextValues = (item: ZoomPhoneCallLog | ZoomPhoneRecording) => {
+const findAssignedUserByNumberAtTime = (
+  values: Array<string | undefined>,
+  item: ZoomPhoneCallLog | ZoomPhoneRecording | ZoomPhoneMetricCall,
+  context: CrmMatchContext
+): ZoomPhoneCrmUserMatch | undefined => {
+  const recordTimestamp = getZoomRecordTimestamp(item);
+  const variants = Array.from(new Set(values.flatMap(comparableNumbers))).filter(Boolean);
+  if (!recordTimestamp || variants.length === 0) return undefined;
+
+  const matchedAssignments = context.numberAssignments
+    .filter((assignment) => {
+      const assignedAt = assignment.match.assignedAt.getTime();
+      const releasedAt = assignment.match.releasedAt?.getTime();
+      return (
+        assignedAt <= recordTimestamp &&
+        (!releasedAt || recordTimestamp < releasedAt) &&
+        variants.some((variant) => assignment.numbers.some((storedNumber) => phoneVariantsMatch(variant, storedNumber)))
+      );
+    })
+    .sort((first, second) => second.match.assignedAt.getTime() - first.match.assignedAt.getTime());
+
+  return matchedAssignments[0]?.match.user;
+};
+
+const isEmailValue = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+
+const collectEmailValues = (value: unknown, depth = 0): string[] => {
+  if (!value || depth > 2) return [];
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return isEmailValue(trimmed) ? [trimmed] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectEmailValues(item, depth + 1));
+  }
+
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, nestedValue]) => {
+      if (key.toLowerCase().includes('email') && typeof nestedValue === 'string') {
+        const trimmed = nestedValue.trim();
+        return isEmailValue(trimmed) ? [trimmed] : [];
+      }
+      return collectEmailValues(nestedValue, depth + 1);
+    });
+  }
+
+  return [];
+};
+
+const getAgentIdentityEmailValues = (item: ZoomPhoneCallLog | ZoomPhoneRecording) => {
   const direction = normalizeDirection(item);
   const owner = item.owner;
+  const record = item as Record<string, unknown>;
+  const allEmails = collectEmailValues(item);
+  const emails = {
+    caller: toTrimmedString(record.caller_email),
+    callee: toTrimmedString(record.callee_email),
+    user: toTrimmedString(record.user_email),
+    owner: owner?.email
+  };
 
   if (direction === 'Outgoing') {
-    return [item.caller_name, owner?.name, owner?.id, owner?.extension_number, owner?.phone_number];
+    return [emails.caller, emails.owner, emails.user, ...allEmails];
   }
 
   if (direction === 'Incoming') {
-    return [item.callee_name, owner?.name, owner?.id, owner?.extension_number, owner?.phone_number];
+    return [emails.callee, emails.owner, emails.user, ...allEmails];
+  }
+
+  return [emails.owner, emails.user, emails.caller, emails.callee, ...allEmails];
+};
+
+const getAgentIdentityZoomAliasValues = (item: ZoomPhoneCallLog | ZoomPhoneRecording) => {
+  const owner = item.owner;
+  const call = item as ZoomPhoneCallLog;
+  return [call.user_id, owner?.id, owner?.email, call.user_email];
+};
+
+const getAgentIdentityNumberValues = (item: ZoomPhoneCallLog | ZoomPhoneRecording) => {
+  const direction = normalizeDirection(item);
+  const owner = item.owner;
+  const call = item as ZoomPhoneCallLog;
+  const ownerNumbers = [owner?.extension_number, owner?.phone_number];
+
+  if (direction === 'Outgoing') {
+    return [...ownerNumbers, item.caller_number, call.caller_phone_number, call.caller_did_number];
+  }
+
+  if (direction === 'Incoming') {
+    return [...ownerNumbers, item.callee_number, call.callee_phone_number, call.callee_did_number];
   }
 
   return [
-    owner?.name,
-    owner?.id,
-    owner?.extension_number,
-    owner?.phone_number,
-    item.caller_name,
-    item.callee_name
+    ...ownerNumbers,
+    item.caller_number,
+    item.callee_number,
+    call.caller_phone_number,
+    call.callee_phone_number,
+    call.caller_did_number,
+    call.callee_did_number
   ];
 };
 
@@ -652,9 +1082,12 @@ const enrichZoomPhoneItem = <TItem extends ZoomPhoneCallLog | ZoomPhoneRecording
 ): TItem => {
   const enriched = { ...item } as TItem;
   const phoneValues = getCandidatePhoneValues(item);
+  const zoomAliasValues = getAgentIdentityZoomAliasValues(item);
+  const agentNumberValues = getAgentIdentityNumberValues(item);
   const matchedUser =
-    findPhoneMatch(phoneValues, context.users) ||
-    findZoomAliasMatch(getAgentIdentityTextValues(item), context);
+    findEmailMatch(getAgentIdentityEmailValues(item), context.users) ||
+    findZoomAliasMatch(zoomAliasValues, context) ||
+    findAssignedUserByNumberAtTime(agentNumberValues, item, context);
   const matchedLead = findPhoneMatch(phoneValues, context.leads);
 
   if (matchedUser) enriched.matched_user = matchedUser;
@@ -687,8 +1120,8 @@ const buildZoomPageQuery = (query: ZoomPhoneQuery) => {
   return zoomQuery;
 };
 
-const titleCase = (value?: string) => {
-  const normalized = (value || '').replace(/[_-]+/g, ' ').trim();
+const titleCase = (value?: unknown) => {
+  const normalized = toSafeString(value).replace(/[_-]+/g, ' ').trim();
   if (!normalized) return 'Unknown';
   return normalized
     .split(/\s+/)
@@ -799,12 +1232,16 @@ const buildCallLogFromRecording = (recording: ZoomPhoneRecording): ZoomPhoneCall
   const callLog = {
     id: recording.call_log_id || recording.call_history_id || recording.call_id || recording.id,
     call_id: recording.call_id,
+    source: 'recording' as const,
     direction: recording.direction,
     duration: recording.duration,
     date_time: recording.date_time,
     call_end_time: recording.end_time,
     caller_number: recording.caller_number,
     callee_number: recording.callee_number,
+    caller_email: recording.caller_email,
+    callee_email: recording.callee_email,
+    user_email: recording.user_email,
     caller_name: recording.caller_name,
     callee_name: recording.callee_name,
     result: 'Recorded',
@@ -814,6 +1251,53 @@ const buildCallLogFromRecording = (recording: ZoomPhoneRecording): ZoomPhoneCall
     site: recording.site,
     matched_user: recording.matched_user,
     matched_lead: recording.matched_lead
+  };
+
+  return Object.fromEntries(
+    Object.entries(callLog).filter(([, value]) => value !== undefined && value !== '')
+  ) as ZoomPhoneCallLog;
+};
+
+const getMetricAgentParty = (call: ZoomPhoneMetricCall) => {
+  const direction = (call.direction || call.call_type || '').toLowerCase();
+  if (direction.includes('out')) return call.caller;
+  if (direction.includes('in')) return call.callee;
+  return call.caller || call.callee;
+};
+
+const buildCallLogFromMetric = (call: ZoomPhoneMetricCall): ZoomPhoneCallLog => {
+  const agentParty = getMetricAgentParty(call);
+  const callLog = {
+    id: call.call_id,
+    call_id: call.call_id,
+    source: 'metrics' as const,
+    call_type: call.call_type,
+    direction: call.direction,
+    duration: call.duration,
+    date_time: call.date_time,
+    caller_number: call.caller?.phone_number || call.caller?.extension_number,
+    callee_number: call.callee?.phone_number || call.callee?.extension_number,
+    caller_email: call.caller?.email,
+    callee_email: call.callee?.email,
+    user_email: agentParty?.email || call.owner?.email,
+    caller_name: call.caller?.name,
+    callee_name: call.callee?.name,
+    result: call.result || call.status,
+    owner: call.owner || {
+      name: agentParty?.name,
+      email: agentParty?.email,
+      extension_number: agentParty?.extension_number ? String(agentParty.extension_number) : undefined,
+      phone_number: agentParty?.phone_number
+    },
+    matched_user: call.matched_user,
+    site: call.owner
+      ? undefined
+      : agentParty?.site_id || agentParty?.site_name
+        ? {
+            id: agentParty.site_id,
+            name: agentParty.site_name
+          }
+        : undefined
   };
 
   return Object.fromEntries(
@@ -881,7 +1365,7 @@ const fetchZoomPages = async <TResponse extends { next_page_token?: string }, TI
   };
 };
 
-const normalizeInventoryStatus = (value?: string) => (value || 'unknown').replace(/[_-]+/g, ' ').toLowerCase();
+const normalizeInventoryStatus = (value?: unknown) => (toSafeString(value) || 'unknown').replace(/[_-]+/g, ' ').toLowerCase();
 
 const hasAssignedNumber = (number: ZoomPhoneNumber) => Boolean(number.assignee?.id || number.assignee?.name);
 
@@ -939,21 +1423,35 @@ const fetchInventoryData = async (query: ZoomPhoneQuery) => {
   return buildInventoryResponse(numberPages.items, userPages.items, numberPages.pagesScanned, userPages.pagesScanned);
 };
 
-const getMetricPartyValues = (party?: ZoomPhoneMetricParty) =>
-  [party?.phone_number, party?.extension_number, party?.name].filter((value): value is string => Boolean(value));
+const getMetricPartyNumberValues = (party?: ZoomPhoneMetricParty) =>
+  [party?.phone_number, party?.extension_number].filter((value): value is string => Boolean(value));
 
 const getMetricPhoneValues = (call: ZoomPhoneMetricCall) => [
-  ...getMetricPartyValues(call.caller),
-  ...getMetricPartyValues(call.callee),
+  ...getMetricPartyNumberValues(call.caller),
+  ...getMetricPartyNumberValues(call.callee),
   call.owner?.phone_number,
   call.owner?.extension_number
 ];
 
-const getLikelyAgentValues = (call: ZoomPhoneMetricCall) => {
+const getLikelyAgentEmailValues = (call: ZoomPhoneMetricCall) => {
+  const allEmails = collectEmailValues(call);
   const direction = (call.direction || call.call_type || '').toLowerCase();
-  if (direction.includes('out')) return getMetricPartyValues(call.caller);
-  if (direction.includes('in')) return getMetricPartyValues(call.callee);
-  return getMetricPhoneValues(call);
+  if (direction.includes('out')) return [call.caller?.email, call.owner?.email, ...allEmails];
+  if (direction.includes('in')) return [call.callee?.email, call.owner?.email, ...allEmails];
+  return [call.owner?.email, call.caller?.email, call.callee?.email, ...allEmails];
+};
+
+const getLikelyAgentZoomAliasValues = (call: ZoomPhoneMetricCall) => {
+  const agentParty = getMetricAgentParty(call);
+  return [call.owner?.id, call.owner?.email, agentParty?.email];
+};
+
+const getLikelyAgentNumberValues = (call: ZoomPhoneMetricCall) => {
+  const direction = (call.direction || call.call_type || '').toLowerCase();
+  const ownerNumbers = [call.owner?.phone_number, call.owner?.extension_number];
+  if (direction.includes('out')) return [...ownerNumbers, ...getMetricPartyNumberValues(call.caller)];
+  if (direction.includes('in')) return [...ownerNumbers, ...getMetricPartyNumberValues(call.callee)];
+  return [...ownerNumbers, ...getMetricPartyNumberValues(call.caller), ...getMetricPartyNumberValues(call.callee)];
 };
 
 const getLikelyConnectedNumber = (call: ZoomPhoneMetricCall) => {
@@ -1000,8 +1498,9 @@ const isLiveMetricCall = (call: ZoomPhoneMetricCall) => {
 const enrichMetricCall = (call: ZoomPhoneMetricCall, context: CrmMatchContext): ZoomPhoneMetricCall => {
   const enriched: ZoomPhoneMetricCall = { ...call };
   const matchedUser =
-    findPhoneMatch(getLikelyAgentValues(call), context.users) ||
-    findTextMatch([call.caller?.name, call.callee?.name, call.owner?.name], context.users);
+    findEmailMatch(getLikelyAgentEmailValues(call), context.users) ||
+    findZoomAliasMatch(getLikelyAgentZoomAliasValues(call), context) ||
+    findAssignedUserByNumberAtTime(getLikelyAgentNumberValues(call), call, context);
 
   if (matchedUser) enriched.matched_user = matchedUser;
 
@@ -1034,11 +1533,8 @@ const getInventoryUserNumbers = (phoneUser: ZoomPhoneUser, inventory: ZoomPhoneI
 
 const matchInventoryUser = (
   phoneUser: ZoomPhoneUser,
-  connectedNumbers: string[],
   context: CrmMatchContext
-): ZoomPhoneCrmUserMatch | undefined =>
-  findPhoneMatch(connectedNumbers, context.users) ||
-  findTextMatch([phoneUser.email, phoneUser.name], context.users);
+): ZoomPhoneCrmUserMatch | undefined => findEmailMatch([phoneUser.email], context.users);
 
 const buildLiveStatusResponse = async (query: ZoomPhoneQuery): Promise<ZoomPhoneLiveStatusResponse> => {
   const inventory = await fetchInventoryData(query);
@@ -1067,7 +1563,7 @@ const buildLiveStatusResponse = async (query: ZoomPhoneQuery): Promise<ZoomPhone
       connected_numbers: connectedNumbers,
       live_status: 'available'
     };
-    const matchedUser = matchInventoryUser(phoneUser, connectedNumbers, context);
+    const matchedUser = matchInventoryUser(phoneUser, context);
     if (matchedUser) liveUser.matched_user = matchedUser;
 
     const activeCall = activeCalls.find((call) => {
@@ -1075,7 +1571,6 @@ const buildLiveStatusResponse = async (query: ZoomPhoneQuery): Promise<ZoomPhone
       return findPhoneMatch(getMetricPhoneValues(call), [
         {
           numbers: connectedNumbers.flatMap(comparableNumbers),
-          searchText: '',
           match: true
         }
       ]);
@@ -1112,10 +1607,16 @@ const buildAnalyticsResponse = (
     const matchedRecordings = getRecordingsForCall(call, recordingIndex);
     const recordingDownloadUrl = matchedRecordings[0]?.download_url || matchedRecordings[0]?.file_url;
     const startedAt = getCallStartedAt(call);
+    const isMetricsCallWithoutResult = call.source === 'metrics' && !call.result && !call.path;
+    const normalizedStatus = isMetricsCallWithoutResult
+      ? matchedRecordings.length > 0
+        ? 'Connected'
+        : 'Unknown'
+      : normalizeStatus(call);
     const normalizedCall: ZoomPhoneAnalyticsCall = {
       ...call,
       normalized_direction: normalizeDirection(call),
-      normalized_status: normalizeStatus(call),
+      normalized_status: normalizedStatus,
       agent_name: call.matched_user?.name || getCallAgentName(call),
       display_phone: call.matched_lead?.phone || getDisplayPhone(call),
       recording_count: matchedRecordings.length,
@@ -1407,16 +1908,140 @@ export const zoomPhoneService = {
     };
   },
 
+  getNumberAssignments: async (activeOnly = false): Promise<ZoomPhoneNumberAssignmentsResponse> => {
+    const assignments = await ZoomPhoneNumberAssignment.find(activeOnly ? { releasedAt: { $exists: false } } : {})
+      .sort({ normalizedNumber: 1, assignedAt: -1 })
+      .lean();
+
+    return {
+      assignments: assignments.map((assignment) =>
+        serializeZoomPhoneNumberAssignment(assignment as ZoomPhoneNumberAssignmentLike)
+      )
+    };
+  },
+
+  assignNumberToUser: async (input: AssignZoomPhoneNumberInput): Promise<ZoomPhoneNumberAssignmentRecord> => {
+    const userId = toTrimmedString(input.userId);
+    const normalizedNumber = normalizePhoneNumber(input.phoneNumber);
+
+    if (!userId) {
+      const error = new Error('User is required');
+      (error as Error & { statusCode?: number }).statusCode = 400;
+      throw error;
+    }
+
+    if (normalizedNumber.length < 7) {
+      const error = new Error('A valid Zoom phone number is required');
+      (error as Error & { statusCode?: number }).statusCode = 400;
+      throw error;
+    }
+
+    const assignedAt = assertValidAssignmentDate(input.assignedAt);
+    const user = await User.findById(userId).select('_id name email phone isActive createdAt updatedAt').lean();
+
+    if (!user) {
+      const error = new Error('User not found');
+      (error as Error & { statusCode?: number }).statusCode = 404;
+      throw error;
+    }
+
+    const userMatch = buildUserMatch(user as Record<string, unknown>);
+    const displayNumber = buildAssignmentDisplayNumber(input.phoneNumber);
+    const targetUserId = toIdString(user._id);
+    const targetUserObjectId = user._id;
+
+    await ZoomPhoneNumberAssignment.updateMany(
+      {
+        normalizedNumber,
+        crmUser: { $ne: targetUserObjectId },
+        releasedAt: { $exists: false }
+      },
+      { $set: { releasedAt: assignedAt } }
+    );
+
+    const assignmentUpdate = {
+      $setOnInsert: {
+        normalizedNumber
+      },
+      $set: {
+        displayNumber,
+        assignedAt,
+        source: 'manual' as const,
+        ...assignmentUserPayload(userMatch)
+      }
+    };
+
+    try {
+      await ZoomPhoneNumberAssignment.findOneAndUpdate(
+        {
+          normalizedNumber,
+          crmUser: targetUserObjectId,
+          releasedAt: { $exists: false }
+        },
+        assignmentUpdate,
+        { upsert: true, new: true }
+      );
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+
+      await ZoomPhoneNumberAssignment.updateMany(
+        {
+          normalizedNumber,
+          crmUser: { $ne: targetUserObjectId },
+          releasedAt: { $exists: false }
+        },
+        { $set: { releasedAt: assignedAt } }
+      );
+      await ZoomPhoneNumberAssignment.updateOne(
+        {
+          normalizedNumber,
+          releasedAt: { $exists: false }
+        },
+        assignmentUpdate,
+        { upsert: true }
+      );
+    }
+
+    await User.updateOne({ _id: targetUserObjectId }, { $set: { phone: displayNumber } });
+
+    const assignment = await ZoomPhoneNumberAssignment.findOne({
+      normalizedNumber,
+      crmUser: targetUserObjectId,
+      releasedAt: { $exists: false }
+    }).lean();
+
+    if (!assignment) {
+      const error = new Error(`Unable to assign ${displayNumber} to ${userMatch.name}`);
+      (error as Error & { statusCode?: number }).statusCode = 409;
+      throw error;
+    }
+
+    const record = serializeZoomPhoneNumberAssignment(assignment as ZoomPhoneNumberAssignmentLike);
+    record.crmUser = targetUserId;
+    return record;
+  },
+
   getAccountCallLogs: async (query: ZoomPhoneQuery) => {
     return requestZoomJson<ZoomCallLogsResponse>('/phone/call_logs', buildZoomQuery(query));
   },
 
   getAccountRecordings: async (query: ZoomPhoneQuery) => {
-    return requestZoomJson<ZoomRecordingsResponse>('/phone/recordings', buildZoomQuery(query));
+    const [inventory, response] = await Promise.all([
+      fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
+      requestZoomJson<ZoomRecordingsResponse>('/phone/recordings', buildZoomQuery(query))
+    ]);
+    const context = await buildCrmMatchContext(inventory);
+
+    return {
+      ...response,
+      recordings: (response.recordings || []).map((recording) => enrichZoomPhoneItem(recording, context))
+    };
   },
 
   getAccountInventory: async (query: ZoomPhoneQuery) => {
-    return fetchInventoryData(query);
+    const inventory = await fetchInventoryData(query);
+    await buildCrmMatchContext(inventory);
+    return inventory;
   },
 
   getAccountLiveStatus: async (query: ZoomPhoneQuery) => {
@@ -1424,31 +2049,41 @@ export const zoomPhoneService = {
   },
 
   getAccountAnalytics: async (query: ZoomPhoneQuery) => {
-    const [inventory, callLogPages] = await Promise.all([
+    const [inventory, metricPages] = await Promise.all([
       fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
-      fetchZoomPages<ZoomCallLogsResponse, ZoomPhoneCallLog>('/phone/call_logs', 'call_logs', query)
+      fetchZoomPages<ZoomPhoneMetricsResponse, ZoomPhoneMetricCall>('/phone/metrics/call_logs', 'call_logs', query)
     ]);
     const context = await buildCrmMatchContext(inventory);
+    let callLogs = metricPages.items.map((call) => buildCallLogFromMetric(enrichMetricCall(call, context)));
+    let pagesScanned = metricPages.pagesScanned;
+
+    if (callLogs.length === 0) {
+      const callLogPages = await fetchZoomPages<ZoomCallLogsResponse, ZoomPhoneCallLog>('/phone/call_logs', 'call_logs', query);
+      callLogs = callLogPages.items.map((call) => enrichZoomPhoneItem({ ...call, source: 'call_log' as const }, context));
+      pagesScanned = callLogPages.pagesScanned;
+    }
 
     let recordings: ZoomPhoneRecording[] = [];
     let recordingsError: string | undefined;
 
-    try {
-      const recordingPages = await fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
-        '/phone/recordings',
-        'recordings',
-        query
-      );
-      recordings = recordingPages.items;
-    } catch (error) {
-      recordingsError = error instanceof Error ? error.message : 'Unable to retrieve Zoom Phone recordings';
+    if (query.includeRecordings !== false) {
+      try {
+        const recordingPages = await fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
+          '/phone/recordings',
+          'recordings',
+          query
+        );
+        recordings = recordingPages.items;
+      } catch (error) {
+        recordingsError = error instanceof Error ? error.message : 'Unable to retrieve Zoom Phone recordings';
+      }
     }
 
     return buildAnalyticsResponse(
       query,
-      callLogPages.items.map((call) => enrichZoomPhoneItem(call, context)),
+      callLogs.map((call) => enrichZoomPhoneItem(call, context)),
       recordings.map((recording) => enrichZoomPhoneItem(recording, context)),
-      callLogPages.pagesScanned,
+      pagesScanned,
       recordingsError
     );
   },
