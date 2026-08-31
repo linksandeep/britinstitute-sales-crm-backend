@@ -916,7 +916,7 @@ export const getAdminLeadStatsService = async (query: any) => {
   };
 };
 // ========== CREATE OWNER ADMIN ==========
-export const createNewUser = async (req: Request, res: Response) => {
+export const createNewUser = async (_req: Request, res: Response) => {
   try {
     const ownerEmail = 'owner@leadmanager.com';
     const ownerPassword = 'Owner@4545';
@@ -982,7 +982,7 @@ export const createNewUser = async (req: Request, res: Response) => {
 // ========== DELETE SELF ACCOUNT & ALL RELATED DATA ==========
 
 
-export const deleteAccount = async (req: Request, res: Response) => {
+export const deleteAccount = async (_req: Request, res: Response) => {
   try {
     // Hardcoded owner email
     const ownerEmail = 'owner@leadmanager.com';
