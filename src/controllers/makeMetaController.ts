@@ -6,18 +6,12 @@ import {
   upsertMakeMetaLead,
 } from '../service/makeMeta.service';
 
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const phonePattern = /^[+]?([\d\s\-().]){7,25}$/;
-
 export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<void> => {
   try {
     const leadData = normalizeMakeMetaLeadInput(req.body as Record<string, unknown>);
     const errors: string[] = [];
 
     if (!leadData.metaLeadId) errors.push('metaLeadId is required');
-    if (leadData.name.length < 2) errors.push('name must contain at least 2 characters');
-    if (!emailPattern.test(leadData.email)) errors.push('a valid email is required');
-    if (!phonePattern.test(leadData.phone)) errors.push('a valid phone number is required');
 
     if (errors.length > 0) {
       res.status(422).json({

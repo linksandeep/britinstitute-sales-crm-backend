@@ -48,7 +48,7 @@ Map the Facebook module output into this body:
 }
 ```
 
-The API also accepts Make/Meta snake-case names such as `lead_id`, `full_name`, `phone_number`, `campaign_name`, and `created_time`. `metaLeadId`, name, email, and phone are required. Repeated delivery of the same Facebook Lead ID is idempotent and returns the existing lead instead of creating a duplicate.
+The API also accepts Make/Meta snake-case names such as `lead_id`, `full_name`, `phone_number`, `campaign_name`, and `created_time`. Only `metaLeadId` is required. Missing, placeholder, or invalid contact values do not reject the lead: the original values and complete incoming payload are retained on the Meta lead, while unique internal fallback values keep the CRM record usable. Repeated delivery of the same Facebook Lead ID is idempotent and returns the existing lead instead of creating a duplicate.
 
 Expected success outcomes are `created`, `linked` (an existing email/phone was linked to Meta), or `duplicate`.
 
@@ -86,4 +86,4 @@ Turn both scenarios on with **Immediately as data arrives**.
 6. Confirm Scenario 2 runs and the CRM card shows the latest feedback status/time.
 7. Confirm the event appears in Meta Events Manager for the selected CRM pixel/dataset.
 
-If Scenario 1 gets `401`, the API keys do not match. If it gets `422`, inspect the response `errors` array and verify the required field mappings. If the lead is saved but feedback is not sent, check `MAKE_META_FEEDBACK_WEBHOOK_URL`, the optional custom-webhook API key, and the error shown in the Meta Attribution card.
+If Scenario 1 gets `401`, the API keys do not match. A `422` means the Meta Lead ID itself was not mapped. Invalid or missing name, email, and phone values are accepted and retained. If the lead is saved but feedback is not sent, check `MAKE_META_FEEDBACK_WEBHOOK_URL`, the optional custom-webhook API key, and the error shown in the Meta Attribution card.

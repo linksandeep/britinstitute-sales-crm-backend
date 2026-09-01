@@ -21,6 +21,9 @@ test('normalizes Make and Meta aliases into the CRM lead contract', () => {
   assert.equal(lead.phone, '+91 98765 43210');
   assert.equal(lead.campaignName, 'Summer Campaign');
   assert.equal(lead.createdTime, '1787270400');
+  assert.equal(lead.originalName, 'Test Person');
+  assert.equal(lead.originalEmail, 'TEST@EXAMPLE.COM');
+  assert.equal(lead.originalPhone, '+91 98765 43210');
 });
 
 test('reads contact answers from Meta field_data arrays', () => {
@@ -36,6 +39,22 @@ test('reads contact answers from Meta field_data arrays', () => {
   assert.equal(lead.name, 'Test Person');
   assert.equal(lead.email, 'test@example.com');
   assert.equal(lead.phone, '919876543210');
+});
+
+test('preserves invalid Meta contact values and the complete incoming payload', () => {
+  const payload = {
+    leadId: '1037961745774666',
+    full_name: '<test lead: dummy data for full_name>',
+    email: 'test@meta.com',
+    phone_number: '<test lead: dummy data for phone_number>',
+    education_level: 'dummy education',
+  };
+  const lead = normalizeMakeMetaLeadInput(payload);
+
+  assert.equal(lead.originalName, payload.full_name);
+  assert.equal(lead.originalEmail, payload.email);
+  assert.equal(lead.originalPhone, payload.phone_number);
+  assert.deepEqual(lead.rawPayload, payload);
 });
 
 test('builds the Make feedback payload expected by the CRM conversions module', () => {

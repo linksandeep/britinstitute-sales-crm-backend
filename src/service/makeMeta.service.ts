@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import mongoose from 'mongoose';
 import Lead from '../models/Lead';
 import User from '../models/User';
@@ -51,6 +52,9 @@ const firstValue = (body: Record<string, unknown>, candidates: string[]): string
 
 const optionalString = (value: string): string | undefined => value || undefined;
 
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const phonePattern = /^[+]?([\d\s\-().]){7,25}$/;
+
 const normalizePhone = (value: string): string =>
   value.replace(/[^\d+\-().\s]/g, '').replace(/\s+/g, ' ').trim();
 
@@ -70,11 +74,19 @@ export const normalizeMakeMetaLeadInput = (body: Record<string, unknown>): MakeM
   const lastName = firstValue(body, ['lastName', 'last_name']);
   const suppliedName = firstValue(body, ['name', 'fullName', 'full_name']);
 
+  const originalEmail = firstValue(body, ['email']);
+  const originalPhone = firstValue(body, ['phone', 'phoneNumber', 'phone_number']);
+  const originalName = suppliedName || [firstName, lastName].filter(Boolean).join(' ');
+
   const result: MakeMetaLeadInput = {
     metaLeadId: firstValue(body, ['metaLeadId', 'leadId', 'lead_id', 'leadgenId', 'leadgen_id', 'id']),
-    name: suppliedName || [firstName, lastName].filter(Boolean).join(' '),
-    email: firstValue(body, ['email']).toLowerCase(),
-    phone: normalizePhone(firstValue(body, ['phone', 'phoneNumber', 'phone_number'])),
+    name: originalName,
+    email: originalEmail.toLowerCase(),
+    phone: normalizePhone(originalPhone),
+    originalName,
+    originalEmail,
+    originalPhone,
+    rawPayload: { ...body },
   };
 
   const optionalValues: Array<[keyof MakeMetaLeadInput, string | undefined]> = [
@@ -98,6 +110,26 @@ export const normalizeMakeMetaLeadInput = (body: Record<string, unknown>): MakeM
 
   return result;
 };
+
+const fallbackIdentity = (metaLeadId: string): string =>
+  createHash('sha256').update(metaLeadId).digest('hex').slice(0, 24);
+
+const fallbackPhone = (metaLeadId: string): string => {
+  const hex = createHash('sha256').update(metaLeadId).digest('hex').slice(0, 12);
+  return `9${BigInt(`0x${hex}`).toString().padStart(15, '0').slice(0, 15)}`;
+};
+
+const crmContactValues = (leadData: MakeMetaLeadInput) => ({
+  name: leadData.name.length >= 2 && leadData.name.length <= 100
+    ? leadData.name
+    : 'Unknown Meta Lead',
+  email: emailPattern.test(leadData.email)
+    ? leadData.email
+    : `meta-${fallbackIdentity(leadData.metaLeadId)}@invalid.local`,
+  phone: phonePattern.test(leadData.phone)
+    ? leadData.phone
+    : fallbackPhone(leadData.metaLeadId),
+});
 
 const getSystemUserId = async (): Promise<mongoose.Types.ObjectId | undefined> => {
   const systemUser = await User.findOne({ email: 'system@leadmanager.com' }).select('_id');
@@ -123,6 +155,10 @@ const applyMetaData = (lead: ILead, leadData: MakeMetaLeadInput): void => {
   lead.metaFormId = leadData.formId || lead.metaFormId || '';
   lead.metaPageId = leadData.pageId || lead.metaPageId || '';
   lead.metaAdId = leadData.adId || lead.metaAdId || '';
+  lead.metaOriginalName = leadData.originalName;
+  lead.metaOriginalEmail = leadData.originalEmail;
+  lead.metaOriginalPhone = leadData.originalPhone;
+  lead.metaRawPayload = leadData.rawPayload;
 
   const metaCreatedTime = parseMetaCreatedTime(leadData.createdTime || '');
   if (metaCreatedTime) lead.metaCreatedTime = metaCreatedTime;
@@ -134,9 +170,12 @@ export const upsertMakeMetaLead = async (leadData: MakeMetaLeadInput): Promise<M
     return { outcome: 'duplicate', lead: existingByMetaId };
   }
 
-  const existingByContact = await Lead.findOne({
-    $or: [{ email: leadData.email }, { phone: leadData.phone }],
-  });
+  const contactMatches: Array<Record<string, string>> = [];
+  if (emailPattern.test(leadData.email)) contactMatches.push({ email: leadData.email });
+  if (phonePattern.test(leadData.phone)) contactMatches.push({ phone: leadData.phone });
+  const existingByContact = contactMatches.length
+    ? await Lead.findOne({ $or: contactMatches })
+    : null;
   const systemUserId = await getSystemUserId();
 
   if (existingByContact) {
@@ -155,11 +194,14 @@ export const upsertMakeMetaLead = async (leadData: MakeMetaLeadInput): Promise<M
     return { outcome: 'linked', lead: existingByContact };
   }
 
+  const contactValues = crmContactValues(leadData);
   const lead = new Lead({
-    name: leadData.name,
-    email: leadData.email,
-    phone: leadData.phone,
-    whatsapp: leadData.whatsapp || leadData.phone,
+    name: contactValues.name,
+    email: contactValues.email,
+    phone: contactValues.phone,
+    whatsapp: leadData.whatsapp && phonePattern.test(leadData.whatsapp)
+      ? leadData.whatsapp
+      : contactValues.phone,
     position: leadData.position || '',
     folder: leadData.folder || 'Meta Lead Ads',
     source: 'Meta',
@@ -173,6 +215,10 @@ export const upsertMakeMetaLead = async (leadData: MakeMetaLeadInput): Promise<M
     metaPageId: leadData.pageId || '',
     metaAdId: leadData.adId || '',
     metaCreatedTime: parseMetaCreatedTime(leadData.createdTime || ''),
+    metaOriginalName: leadData.originalName,
+    metaOriginalEmail: leadData.originalEmail,
+    metaOriginalPhone: leadData.originalPhone,
+    metaRawPayload: leadData.rawPayload,
     assignedBy: systemUserId,
   });
 
@@ -198,8 +244,12 @@ export const buildMetaFeedbackPayload = (
     eventName: lead.status,
     eventTime: Math.floor(eventTime.getTime() / 1000),
     leadId: lead.metaLeadId || '',
-    email: lead.email,
-    phoneNumber: lead.phone.replace(/\D/g, ''),
+    email: emailPattern.test(lead.metaOriginalEmail || lead.email)
+      ? (lead.metaOriginalEmail || lead.email).toLowerCase()
+      : '',
+    phoneNumber: phonePattern.test(lead.metaOriginalPhone || lead.phone)
+      ? (lead.metaOriginalPhone || lead.phone).replace(/\D/g, '')
+      : '',
     leadEventSource: process.env.MAKE_META_LEAD_EVENT_SOURCE || 'Lead Manager CRM',
     crmLeadId: String(lead._id),
     status: lead.status,

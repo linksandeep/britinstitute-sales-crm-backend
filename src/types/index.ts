@@ -65,6 +65,10 @@ export interface ILead extends Document {
   metaPageId?: string;
   metaAdId?: string;
   metaCreatedTime?: Date;
+  metaOriginalName?: string;
+  metaOriginalEmail?: string;
+  metaOriginalPhone?: string;
+  metaRawPayload?: Record<string, unknown>;
   metaFeedbackLastStatus?: string;
   metaFeedbackLastSentAt?: Date;
   metaFeedbackLastError?: string;
@@ -178,6 +182,10 @@ export interface MakeMetaLeadInput {
   pageId?: string;
   adId?: string;
   createdTime?: string;
+  originalName: string;
+  originalEmail: string;
+  originalPhone: string;
+  rawPayload: Record<string, unknown>;
 }
 
 export interface MetaFeedbackPayload {

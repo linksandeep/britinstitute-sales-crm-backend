@@ -131,6 +131,25 @@ const leadSchema = new Schema<ILead>({
     type: Date,
     required: false
   },
+  metaOriginalName: {
+    type: String,
+    required: false,
+    default: ''
+  },
+  metaOriginalEmail: {
+    type: String,
+    required: false,
+    default: ''
+  },
+  metaOriginalPhone: {
+    type: String,
+    required: false,
+    default: ''
+  },
+  metaRawPayload: {
+    type: Schema.Types.Mixed,
+    required: false
+  },
   metaFeedbackLastStatus: {
     type: String,
     trim: true,
