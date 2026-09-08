@@ -5,6 +5,18 @@ import User from '../models/User';
 import { getCsvFromGoogleSheet } from '../utils/googleSheet';
 import { applyLeadDateFilter } from '../utils/leadDateFilter';
 import { Response } from 'express';   // ✅ must import from 'express'
+
+const escapeSearchText = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const phoneContainsSearchCondition = (escapedSearchText: string) => ({
+  $expr: {
+    $regexMatch: {
+      input: { $toString: { $ifNull: ['$phone', ''] } },
+      regex: escapedSearchText,
+      options: 'i'
+    }
+  }
+});
+
 export const importLeadsFromGoogleSheetService = async (sheetUrl: string) => {
   const rows = await getCsvFromGoogleSheet(sheetUrl);
 
@@ -417,10 +429,11 @@ export const getLeadsService = async (
   // ---------------- 🔍 SEARCH ----------------
   if (search && typeof search === 'string') {
     const searchText = search.trim();
+    const escapedSearchText = escapeSearchText(searchText);
     const searchConditions = [
-      { name: { $regex: searchText, $options: 'i' } },
-      { email: { $regex: searchText, $options: 'i' } },
-      { $expr: { $eq: [{ $toString: '$phone' }, searchText] } }
+      { name: { $regex: escapedSearchText, $options: 'i' } },
+      { email: { $regex: escapedSearchText, $options: 'i' } },
+      phoneContainsSearchCondition(escapedSearchText)
     ];
 
     // If folder logic already created an $or, we must combine them safely
@@ -649,13 +662,14 @@ export const getMyLeadsService = async (req: Request) => {
     }
   }
 
-  if (search) {
-    const regex = new RegExp(search as string, 'i');
+  if (search && typeof search === 'string') {
+    const escapedSearchText = escapeSearchText(search.trim());
+    const regex = new RegExp(escapedSearchText, 'i');
     const searchConditions = [
       { name: regex },
       { email: regex },
-      { phone: regex },
-      { position: regex }
+      { position: regex },
+      phoneContainsSearchCondition(escapedSearchText)
     ];
 
     if (filter.$or) {
@@ -718,7 +732,7 @@ export const searchLeadsService = async (
   }
 
   const searchText = q.trim();
-  const normalizedPhone = searchText.replace(/\D/g, '');
+  const escapedSearchText = escapeSearchText(searchText);
 
   const filter: any = {};
 
@@ -733,15 +747,10 @@ export const searchLeadsService = async (
      SEARCH CONDITIONS
   ======================= */
   const orConditions: any[] = [
-    { name: { $regex: searchText, $options: 'i' } },
-    { email: { $regex: searchText, $options: 'i' } }
+    { name: { $regex: escapedSearchText, $options: 'i' } },
+    { email: { $regex: escapedSearchText, $options: 'i' } },
+    phoneContainsSearchCondition(escapedSearchText)
   ];
-
-  // ✅ Phone search (number-safe)
-  if (normalizedPhone.length >= 4) {
-    // exact match (FAST)
-    orConditions.push({ phone: Number(normalizedPhone) });
-  }
 
   filter.$or = orConditions;
 
