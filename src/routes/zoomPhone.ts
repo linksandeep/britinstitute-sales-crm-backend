@@ -11,6 +11,7 @@ import {
   getLeadZoomRecordings,
   getZoomPhoneAssignments,
   getZoomPhoneStatus,
+  getMyZoomTalkTime,
   streamAccountZoomRecording,
   streamLeadZoomRecording
 } from '../controllers/zoomPhoneController';
@@ -23,6 +24,7 @@ router.use(authenticateToken, requireAuth);
 
 // Public status check (no auth needed, but it's behind auth in your original)
 router.get('/status', getZoomPhoneStatus);
+router.get('/my/talk-time', getMyZoomTalkTime);
 
 // Admin routes with standard auth
 router.get('/account/analytics', requireAdmin, getAccountZoomAnalytics);

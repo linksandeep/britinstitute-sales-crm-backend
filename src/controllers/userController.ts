@@ -1,4 +1,7 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
+import Lead from '../models/Lead';
+import Reminder from '../models/reminder';
 import User from '../models/User';
 import ZoomPhoneNumberAssignment from '../models/ZoomPhoneNumberAssignment';
 import type { CreateUserInput } from '../types';
@@ -316,14 +319,40 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    await Promise.all([
-      User.findByIdAndDelete(id),
-      ZoomPhoneNumberAssignment.deleteMany({ crmUser: id })
-    ]);
+    const session = await mongoose.startSession();
+    let unassignedLeadCount = 0;
+    let deletedReminderCount = 0;
+    let deletedZoomAssignmentCount = 0;
+
+    try {
+      await session.withTransaction(async () => {
+        const [leadResult, reminderResult, zoomResult, userResult] = await Promise.all([
+          Lead.updateMany({ assignedTo: id }, { $unset: { assignedTo: 1 } }, { session }),
+          Reminder.deleteMany({ user: id }, { session }),
+          ZoomPhoneNumberAssignment.deleteMany({ crmUser: id }, { session }),
+          User.deleteOne({ _id: id }, { session })
+        ]);
+
+        if (userResult.deletedCount !== 1) {
+          throw new Error('User deletion did not complete');
+        }
+
+        unassignedLeadCount = leadResult.modifiedCount;
+        deletedReminderCount = reminderResult.deletedCount;
+        deletedZoomAssignmentCount = zoomResult.deletedCount;
+      });
+    } finally {
+      await session.endSession();
+    }
 
     res.status(200).json({
       success: true,
-      message: 'User deleted successfully'
+      message: 'User deleted and assigned leads unassigned successfully',
+      data: {
+        unassignedLeadCount,
+        deletedReminderCount,
+        deletedZoomAssignmentCount
+      }
     });
   } catch (error) {
     console.error('Delete user error:', error);

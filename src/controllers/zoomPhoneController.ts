@@ -174,6 +174,30 @@ export const getZoomPhoneStatus = async (_req: Request, res: Response): Promise<
   }
 };
 
+export const getMyZoomTalkTime = async (req: Request, res: Response): Promise<void> => {
+  if (!req.user) {
+    res.status(401).json({ success: false, message: 'Authentication required' });
+    return;
+  }
+  const timeZone = getStringQuery(req.query.timezone) || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en', { timeZone }).format();
+  } catch {
+    res.status(400).json({ success: false, message: 'Invalid timezone' });
+    return;
+  }
+  try {
+    const data = await zoomPhoneService.getMyTalkTime(req.user.userId, timeZone);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.status(200).json({ success: true, message: 'Your Zoom talk time retrieved successfully', data });
+  } catch (error) {
+    const statusCode = getStatusCode(error);
+    // A Zoom OAuth/scope error must not log the user out of the CRM.
+    res.status(statusCode === 401 || statusCode === 403 ? 502 : statusCode)
+      .json({ success: false, message: getErrorMessage(error) });
+  }
+};
+
 export const getAccountZoomCallLogs = async (req: Request, res: Response): Promise<void> => {
   try {
     const data = await zoomPhoneService.getAccountCallLogs(getZoomQuery(req));
