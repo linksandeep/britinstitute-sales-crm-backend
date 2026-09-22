@@ -439,6 +439,17 @@ const buildAnalyticsMaxPages = (maxPages?: number) => {
   return Math.min(Math.max(requested, 1), configuredMax, 20);
 };
 
+const buildLeadHistoryMaxPages = (maxPages?: number) => {
+  const configuredMax = getNumberValue(
+    process.env.ZOOM_PHONE_LEAD_MAX_PAGES,
+    8,
+    1,
+    20
+  );
+  const requested = maxPages && Number.isFinite(maxPages) ? Math.trunc(maxPages) : configuredMax;
+  return Math.min(Math.max(requested, 1), configuredMax, 20);
+};
+
 export const normalizePhoneNumber = (value?: unknown) => toSafeString(value).replace(/\D/g, '');
 
 const comparableNumbers = (value?: unknown) => {
@@ -1306,6 +1317,60 @@ const buildCallLogFromMetric = (call: ZoomPhoneMetricCall): ZoomPhoneCallLog => 
   ) as ZoomPhoneCallLog;
 };
 
+const normalizeZoomCallLog = (rawCall: Record<string, unknown>): ZoomPhoneCallLog => {
+  const directionRaw = toSafeString(rawCall.direction || rawCall.call_type);
+  const direction = directionRaw
+    ? directionRaw.charAt(0).toUpperCase() + directionRaw.slice(1).toLowerCase()
+    : 'Unknown';
+  const isOutbound = direction.toLowerCase().includes('out');
+  const callerNumber = toTrimmedString(rawCall.caller_number || rawCall.caller_did_number || rawCall.caller_phone_number || rawCall.caller_ext_number);
+  const calleeNumber = toTrimmedString(rawCall.callee_number || rawCall.callee_did_number || rawCall.callee_phone_number || rawCall.callee_ext_number);
+  const callerEmail = toTrimmedString(rawCall.caller_email);
+  const calleeEmail = toTrimmedString(rawCall.callee_email);
+  const userEmail = toTrimmedString(rawCall.user_email) || (isOutbound ? callerEmail : calleeEmail);
+  const callerName = toTrimmedString(rawCall.caller_name);
+  const calleeName = toTrimmedString(rawCall.callee_name);
+  const ownerRecord = (rawCall.owner && typeof rawCall.owner === 'object' ? rawCall.owner : {}) as Record<string, unknown>;
+
+  const log: ZoomPhoneCallLog = {
+    id: toTrimmedString(rawCall.call_id || rawCall.call_history_uuid || rawCall.id),
+    call_id: toTrimmedString(rawCall.call_id),
+    source: (rawCall.source as 'call_log' | 'metrics' | 'recording') || 'call_log',
+    call_type: toTrimmedString(rawCall.call_type),
+    direction,
+    duration: getCallDuration(rawCall as ZoomPhoneCallLog),
+    date_time: toTrimmedString(rawCall.date_time || rawCall.start_time),
+    answer_start_time: toTrimmedString(rawCall.answer_start_time || rawCall.answer_time),
+    call_end_time: toTrimmedString(rawCall.call_end_time || rawCall.end_time),
+    caller_number: callerNumber,
+    callee_number: calleeNumber,
+    caller_did_number: toTrimmedString(rawCall.caller_did_number),
+    callee_did_number: toTrimmedString(rawCall.callee_did_number),
+    caller_phone_number: toTrimmedString(rawCall.caller_phone_number || rawCall.caller_did_number),
+    callee_phone_number: toTrimmedString(rawCall.callee_phone_number || rawCall.callee_did_number),
+    caller_name: callerName,
+    callee_name: calleeName,
+    caller_email: callerEmail,
+    callee_email: calleeEmail,
+    user_email: userEmail,
+    result: toTrimmedString(rawCall.result || rawCall.call_result),
+    recording_id: toTrimmedString(rawCall.recording_id),
+    recording_type: toTrimmedString(rawCall.recording_type || rawCall.recording_status),
+    user_id: toTrimmedString(rawCall.user_id || (isOutbound ? rawCall.caller_user_id : rawCall.callee_user_id)),
+    owner: {
+      id: toTrimmedString(ownerRecord.id || (isOutbound ? rawCall.caller_user_id : rawCall.callee_user_id)),
+      name: toTrimmedString(ownerRecord.name || (isOutbound ? callerName : calleeName)),
+      email: toTrimmedString(ownerRecord.email || (isOutbound ? callerEmail : calleeEmail)),
+      extension_number: toTrimmedString(ownerRecord.extension_number || (isOutbound ? rawCall.caller_ext_number : rawCall.callee_ext_number)),
+      phone_number: toTrimmedString(ownerRecord.phone_number || (isOutbound ? callerNumber : calleeNumber))
+    }
+  };
+
+  return Object.fromEntries(
+    Object.entries(log).filter(([, value]) => value !== undefined && value !== '')
+  ) as ZoomPhoneCallLog;
+};
+
 const percentage = (part: number, total: number) => (total > 0 ? Number(((part / total) * 100).toFixed(1)) : 0);
 
 const buildBreakdown = (items: string[], total: number): ZoomPhoneAnalyticsBreakdown[] => {
@@ -1325,9 +1390,10 @@ const fetchZoomPages = async <TResponse extends { next_page_token?: string }, TI
   endpoint: string,
   listKey: keyof TResponse,
   query: ZoomPhoneQuery,
-  includeDateRange = true
+  includeDateRange = true,
+  maxPagesOverride?: number
 ) => {
-  const maxPages = buildAnalyticsMaxPages(query.maxPages);
+  const maxPages = maxPagesOverride ?? buildAnalyticsMaxPages(query.maxPages);
   const items: TItem[] = [];
   let pagesScanned = 0;
   let nextPageToken = query.nextPageToken;
@@ -1348,7 +1414,8 @@ const fetchZoomPages = async <TResponse extends { next_page_token?: string }, TI
       includeDateRange ? buildZoomQuery(pageQuery) : buildZoomPageQuery(pageQuery)
     );
 
-    const pageItems = response[listKey];
+    const record = response as Record<string, unknown>;
+    const pageItems = record[listKey as string] || record.call_logs || record.call_history || record.recordings || record.users;
     if (Array.isArray(pageItems)) {
       items.push(...(pageItems as TItem[]));
     }
@@ -2116,6 +2183,22 @@ export const zoomPhoneService = {
   },
 
   getAccountCallLogs: async (query: ZoomPhoneQuery) => {
+    try {
+      const historyPages = await fetchZoomPages<ZoomCallLogsResponse, Record<string, unknown>>(
+        '/phone/call_history',
+        'call_logs',
+        query
+      );
+      if (historyPages.items.length > 0) {
+        return {
+          call_logs: historyPages.items.map(normalizeZoomCallLog),
+          total_records: historyPages.items.length,
+          next_page_token: historyPages.nextPageToken
+        };
+      }
+    } catch {
+      // fallback to legacy endpoint
+    }
     return requestZoomJson<ZoomCallLogsResponse>('/phone/call_logs', buildZoomQuery(query));
   },
 
@@ -2183,31 +2266,67 @@ export const zoomPhoneService = {
   },
 
   getLeadCallHistory: async (lead: ILead, query: ZoomPhoneQuery) => {
-    const [inventory, response] = await Promise.all([
+    const leadMaxPages = buildLeadHistoryMaxPages(query.maxPages);
+    const [inventory, historyPages, recordingPages] = await Promise.all([
       fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
-      requestZoomJson<ZoomCallLogsResponse>('/phone/call_logs', buildZoomQuery(query))
+      fetchZoomPages<ZoomCallLogsResponse, Record<string, unknown>>(
+        '/phone/call_history',
+        'call_logs',
+        query,
+        true,
+        leadMaxPages
+      ).catch(() => ({ items: [] as Record<string, unknown>[], pagesScanned: 0, nextPageToken: undefined })),
+      fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
+        '/phone/recordings',
+        'recordings',
+        query,
+        true,
+        leadMaxPages
+      ).catch(() => ({ items: [] as ZoomPhoneRecording[], pagesScanned: 0, nextPageToken: undefined }))
     ]);
+
     const context = await buildCrmMatchContext(inventory);
     const leadNumbers = getLeadZoomNumbers(lead);
-    let callLogs = (response.call_logs || [])
+
+    let rawCalls = historyPages.items;
+    if (rawCalls.length === 0) {
+      // Fallback 1: metrics call logs
+      const metricPages = await fetchZoomPages<ZoomPhoneMetricsResponse, ZoomPhoneMetricCall>(
+        '/phone/metrics/call_logs',
+        'call_logs',
+        query,
+        true,
+        leadMaxPages
+      ).catch(() => ({ items: [] as ZoomPhoneMetricCall[], pagesScanned: 0, nextPageToken: undefined }));
+
+      if (metricPages.items.length > 0) {
+        rawCalls = metricPages.items.map((call) =>
+          buildCallLogFromMetric(enrichMetricCall(call, context)) as unknown as Record<string, unknown>
+        );
+      } else {
+        // Fallback 2: legacy call_logs
+        const legacyResponse = await requestZoomJson<ZoomCallLogsResponse>(
+          '/phone/call_logs',
+          buildZoomQuery(query)
+        ).catch(() => ({ call_logs: [] }));
+        rawCalls = (legacyResponse.call_logs || []) as unknown as Record<string, unknown>[];
+      }
+    }
+
+    let callLogs = rawCalls
+      .map(normalizeZoomCallLog)
       .filter((call) => phoneMatchesLead(call, leadNumbers))
       .map((call) => enrichZoomPhoneItem(call, context));
-    let recordings: ZoomPhoneRecording[] = [];
 
-    try {
-      const recordingResponse = await requestZoomJson<ZoomRecordingsResponse>('/phone/recordings', buildZoomQuery(query));
-      recordings = (recordingResponse.recordings || [])
-        .filter((recording) => phoneMatchesLead(recording, leadNumbers))
-        .map((recording) => enrichZoomPhoneItem(recording, context));
-      if (callLogs.length === 0 && recordings.length > 0) {
-        callLogs = recordings.map(buildCallLogFromRecording);
-      }
-    } catch {
-      recordings = [];
+    let recordings = (recordingPages.items || [])
+      .filter((recording) => phoneMatchesLead(recording, leadNumbers))
+      .map((recording) => enrichZoomPhoneItem(recording, context));
+
+    if (callLogs.length === 0 && recordings.length > 0) {
+      callLogs = recordings.map(buildCallLogFromRecording);
     }
 
     return {
-      ...response,
       call_logs: callLogs,
       total_records: callLogs.length,
       recordings,
@@ -2216,18 +2335,24 @@ export const zoomPhoneService = {
   },
 
   getLeadRecordings: async (lead: ILead, query: ZoomPhoneQuery) => {
-    const [inventory, response] = await Promise.all([
+    const leadMaxPages = buildLeadHistoryMaxPages(query.maxPages);
+    const [inventory, recordingPages] = await Promise.all([
       fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
-      requestZoomJson<ZoomRecordingsResponse>('/phone/recordings', buildZoomQuery(query))
+      fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
+        '/phone/recordings',
+        'recordings',
+        query,
+        true,
+        leadMaxPages
+      ).catch(() => ({ items: [] as ZoomPhoneRecording[], pagesScanned: 0, nextPageToken: undefined }))
     ]);
     const context = await buildCrmMatchContext(inventory);
     const leadNumbers = getLeadZoomNumbers(lead);
-    const recordings = (response.recordings || [])
+    const recordings = (recordingPages.items || [])
       .filter((recording) => phoneMatchesLead(recording, leadNumbers))
       .map((recording) => enrichZoomPhoneItem(recording, context));
 
     return {
-      ...response,
       recordings,
       total_records: recordings.length,
       matched_numbers: leadNumbers
@@ -2235,18 +2360,34 @@ export const zoomPhoneService = {
   },
 
   getCallLogRecordings: async (lead: ILead, callLogId: string) => {
-    const [inventory, response] = await Promise.all([
+    const leadMaxPages = buildLeadHistoryMaxPages();
+    const [inventory, directResponse, allRecordings] = await Promise.all([
       fetchInventoryData({ pageSize: 300, maxPages: 2 }).catch(() => undefined),
-      requestZoomJson<ZoomRecordingsResponse>(`/phone/call_logs/${encodeURIComponent(callLogId)}/recordings`)
+      requestZoomJson<ZoomRecordingsResponse>('/phone/call_logs/' + encodeURIComponent(callLogId) + '/recordings').catch(() => undefined),
+      fetchZoomPages<ZoomRecordingsResponse, ZoomPhoneRecording>(
+        '/phone/recordings',
+        'recordings',
+        {},
+        false,
+        leadMaxPages
+      ).catch(() => ({ items: [] as ZoomPhoneRecording[], pagesScanned: 0, nextPageToken: undefined }))
     ]);
     const context = await buildCrmMatchContext(inventory);
     const leadNumbers = getLeadZoomNumbers(lead);
-    const recordings = (response.recordings || [])
+
+    let rawRecordings = directResponse?.recordings || [];
+    if (rawRecordings.length === 0) {
+      rawRecordings = allRecordings.items.filter((r) => {
+        const id = getRecordingIdentity(r);
+        return id === callLogId || r.call_id === callLogId || r.call_log_id === callLogId || r.call_history_id === callLogId;
+      });
+    }
+
+    const recordings = (rawRecordings || [])
       .filter((recording) => phoneMatchesLead(recording, leadNumbers))
       .map((recording) => enrichZoomPhoneItem(recording, context));
 
     return {
-      ...response,
       recordings,
       total_records: recordings.length,
       matched_numbers: leadNumbers
