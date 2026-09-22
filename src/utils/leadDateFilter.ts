@@ -48,26 +48,31 @@ const parseDateBoundary = (
 };
 
 export const getLeadDateFilter = (query: Record<string, unknown>) => {
-  const dateField = firstValue(query.dateField) === 'updatedAt' ? 'updatedAt' : 'createdAt';
   const timezoneOffsetMinutes = parseOffset(query.timezoneOffsetMinutes);
+  const filter: Record<string, Record<string, Date>> = {};
+
+  const addRange = (field: 'createdAt' | 'updatedAt', from: unknown, to: unknown) => {
+    const start = parseDateBoundary(from, 'start', timezoneOffsetMinutes);
+    const end = parseDateBoundary(to, 'end', timezoneOffsetMinutes);
+    if (!start && !end) return;
+
+    const range: Record<string, Date> = {};
+    if (start) range.$gte = start;
+    if (end) range.$lte = end;
+    filter[field] = range;
+  };
+
+  addRange('createdAt', query.createdFromDate, query.createdToDate);
+  addRange('updatedAt', query.modifiedFromDate, query.modifiedToDate);
+
+  // Preserve the original single-field date API used by dashboard and analytics screens.
   const exactDate = firstValue(query.date);
+  const legacyFrom = exactDate || query.fromDate;
+  const legacyTo = exactDate || query.toDate;
+  const legacyField = firstValue(query.dateField) === 'updatedAt' ? 'updatedAt' : 'createdAt';
+  if (!filter[legacyField]) addRange(legacyField, legacyFrom, legacyTo);
 
-  const start = exactDate
-    ? parseDateBoundary(exactDate, 'start', timezoneOffsetMinutes)
-    : parseDateBoundary(query.fromDate, 'start', timezoneOffsetMinutes);
-  const end = exactDate
-    ? parseDateBoundary(exactDate, 'end', timezoneOffsetMinutes)
-    : parseDateBoundary(query.toDate, 'end', timezoneOffsetMinutes);
-
-  if (!start && !end) {
-    return {};
-  }
-
-  const range: Record<string, Date> = {};
-  if (start) range.$gte = start;
-  if (end) range.$lte = end;
-
-  return { [dateField]: range };
+  return filter;
 };
 
 export const applyLeadDateFilter = (filter: Record<string, unknown>, query: Record<string, unknown>) => {

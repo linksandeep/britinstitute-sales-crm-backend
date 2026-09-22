@@ -9,6 +9,18 @@ const reminderSchema = new mongoose.Schema({
 
   remindAt: { type: Date, required: true },
 
+  kind: {
+    type: String,
+    enum: ['manual', 'status_follow_up', 'status_call_back'],
+    default: 'manual'
+  },
+  scheduledTimeZone: {
+    type: String,
+    enum: ['Europe/London', 'Asia/Kolkata']
+  },
+  scheduledLocalDate: { type: String },
+  scheduledLocalTime: { type: String },
+
   status: {
     type: String,
     enum: ['pending', 'triggered'],

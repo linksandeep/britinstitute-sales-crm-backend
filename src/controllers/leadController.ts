@@ -11,6 +11,7 @@ import { assignLeadsService, getAdminLeadStatsService, getAllChatsService, getDu
 import { sendError } from '../utils/sendError';
 import { getLeadDateFilter } from '../utils/leadDateFilter';
 import { sendMetaStatusFeedback } from '../service/makeMeta.service';
+import { parseStatusReminder, replaceLeadStatusReminder } from '../service/statusReminder.service';
 
 
 
@@ -263,6 +264,21 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
     }
 
     const previousStatus = lead.status;
+    const requestedStatus = typeof updateData.status === 'string' ? updateData.status.trim() : undefined;
+    const statusWillChange = Boolean(requestedStatus && requestedStatus !== previousStatus);
+    let parsedStatusReminder: ReturnType<typeof parseStatusReminder> = null;
+    if (statusWillChange && requestedStatus) {
+      try {
+        parsedStatusReminder = parseStatusReminder(requestedStatus, updateData.statusReminder);
+      } catch (error) {
+        res.status(400).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Invalid reminder schedule'
+        });
+        return;
+      }
+      updateData.status = requestedStatus;
+    }
 
     // Check if user can update this lead
     if (req.user?.role !== 'admin' && String(lead.assignedTo) !== String(req.user?.userId)) {
@@ -345,6 +361,15 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
     });
 
     await lead.save({ validateModifiedOnly: true });
+
+    if (statusWillChange) {
+      await replaceLeadStatusReminder({
+        leadId: lead._id,
+        leadName: lead.name,
+        userId: lead.assignedTo || req.user!.userId,
+        schedule: parsedStatusReminder
+      });
+    }
 
     if (previousStatus !== lead.status && lead.metaLeadId) {
       await sendMetaStatusFeedback(lead, previousStatus);
@@ -506,7 +531,11 @@ export const unassignLeads = async (req: Request, res: Response): Promise<void> 
 
 export const bulkUpdateStatus = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { leadIds, status }: { leadIds: string[]; status: string } = req.body;
+    const { leadIds, status, statusReminder }: {
+      leadIds: string[];
+      status: string;
+      statusReminder?: UpdateLeadInput['statusReminder'];
+    } = req.body;
 
     // Validate input
     if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
@@ -528,15 +557,26 @@ export const bulkUpdateStatus = async (req: Request, res: Response): Promise<voi
     }
 
     const normalizedStatus = status.trim();
-    const feedbackCandidates = await Lead.find({
+    const changedLeads = await Lead.find({
       _id: { $in: leadIds },
-      metaLeadId: { $exists: true, $ne: '' },
-      status: { $ne: normalizedStatus },
+      status: { $ne: normalizedStatus }
     });
+    let parsedStatusReminder: ReturnType<typeof parseStatusReminder> = null;
+    if (changedLeads.length > 0) {
+      try {
+        parsedStatusReminder = parseStatusReminder(normalizedStatus, statusReminder);
+      } catch (error) {
+        res.status(400).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Invalid reminder schedule'
+        });
+        return;
+      }
+    }
 
     // Update leads' status
     const result = await Lead.updateMany(
-      { _id: { $in: leadIds } },
+      { _id: { $in: leadIds }, status: { $ne: normalizedStatus } },
       { 
         $set: { 
           status: normalizedStatus,
@@ -551,7 +591,14 @@ export const bulkUpdateStatus = async (req: Request, res: Response): Promise<voi
       .populate('assignedToUser', 'name email')
       .populate('assignedByUser', 'name email');
 
-    await Promise.all(feedbackCandidates.map(async (lead) => {
+    await Promise.all(changedLeads.map((lead) => replaceLeadStatusReminder({
+      leadId: lead._id,
+      leadName: lead.name,
+      userId: lead.assignedTo || req.user!.userId,
+      schedule: parsedStatusReminder
+    })));
+
+    await Promise.all(changedLeads.filter((lead) => lead.metaLeadId).map(async (lead) => {
       const previousStatus = lead.status;
       lead.status = normalizedStatus;
       await sendMetaStatusFeedback(lead, previousStatus);

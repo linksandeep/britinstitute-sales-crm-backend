@@ -6,13 +6,13 @@ const now = new Date('2026-09-15T12:00:00Z');
 
 test('separates today from Sunday-to-today and excludes old and future calls', () => {
   const result = sumZoomTalkTime([
-    { id: 'today', start_time: '2026-09-15T10:00:00Z', talk_time: 125 },
-    { id: 'sunday', start_time: '2026-09-13T10:00:00Z', talk_time: 3600 },
-    { id: 'old', start_time: '2026-09-12T10:00:00Z', talk_time: 999 },
-    { id: 'future', start_time: '2026-09-15T13:00:00Z', talk_time: 999 }
+    { id: 'today', start_time: '2026-09-15T10:00:00Z', talk_time: 125, direction: 'outbound' },
+    { id: 'sunday', start_time: '2026-09-13T10:00:00Z', talk_time: 3600, direction: 'incoming' },
+    { id: 'old', start_time: '2026-09-12T10:00:00Z', talk_time: 999, direction: 'outbound' },
+    { id: 'future', start_time: '2026-09-15T13:00:00Z', talk_time: 999, direction: 'outbound' }
   ], 'UTC', now);
-  assert.deepEqual(result.daily, { date: '2026-09-15', talk_time_seconds: 125, connected_calls: 1 });
-  assert.deepEqual(result.weekly, { from: '2026-09-13', to: '2026-09-15', talk_time_seconds: 3725, connected_calls: 2 });
+  assert.deepEqual(result.daily, { date: '2026-09-15', talk_time_seconds: 125, connected_calls: 1, dialed_calls: 1 });
+  assert.deepEqual(result.weekly, { from: '2026-09-13', to: '2026-09-15', talk_time_seconds: 3725, connected_calls: 1, dialed_calls: 1 });
 });
 
 test('uses local calendar boundaries on either side of UTC', () => {
@@ -35,10 +35,11 @@ test('handles timezone daylight-saving changes and Sunday rollover', () => {
 });
 
 test('deduplicates elements while preserving separate transferred call segments', () => {
-  const call = { call_element_id: 'element-1', call_id: 'same-call', start_time: '2026-09-15T10:00:00Z', talk_time: 60 };
+  const call = { call_element_id: 'element-1', call_id: 'same-call', start_time: '2026-09-15T10:00:00Z', talk_time: 60, direction: 'outbound' };
   const result = sumZoomTalkTime([call, call, { ...call, call_element_id: 'element-2', talk_time: 120 }], 'UTC', now);
   assert.equal(result.daily.talk_time_seconds, 180);
   assert.equal(result.daily.connected_calls, 1);
+  assert.equal(result.daily.dialed_calls, 1);
 });
 
 test('excludes unsuccessful calls, invalid values, and ringing-only durations', () => {
@@ -53,8 +54,21 @@ test('excludes unsuccessful calls, invalid values, and ringing-only durations', 
   assert.equal(result.weekly.talk_time_seconds, 0);
 });
 
+test('counts unique outbound attempts whether or not they connected', () => {
+  const result = sumZoomTalkTime([
+    { call_element_id: 'failed-leg', call_id: 'failed-call', start_time: '2026-09-15T09:00:00Z', direction: 'outbound', result: 'no_answer' },
+    { call_element_id: 'failed-leg-copy', call_id: 'failed-call', start_time: '2026-09-15T09:00:00Z', direction: 'outbound', result: 'no_answer' },
+    { id: 'busy-call', start_time: '2026-09-15T09:30:00Z', direction: 'outgoing', result: 'busy' },
+    { id: 'connected-call', start_time: '2026-09-15T10:00:00Z', direction: 'outbound', result: 'connected', talk_time: 45 },
+    { id: 'incoming-call', start_time: '2026-09-15T11:00:00Z', direction: 'incoming', result: 'connected', talk_time: 30 }
+  ], 'UTC', now);
+  assert.equal(result.daily.dialed_calls, 3);
+  assert.equal(result.daily.connected_calls, 1);
+  assert.equal(result.daily.talk_time_seconds, 75);
+});
+
 test('falls back to answered duration and treats explicit zero talk time as zero', () => {
-  const call = { start_time: '2026-09-15T10:00:00Z', answer_time: '2026-09-15T10:00:30Z', end_time: '2026-09-15T10:02:30Z' };
+  const call = { start_time: '2026-09-15T10:00:00Z', answer_time: '2026-09-15T10:00:30Z', end_time: '2026-09-15T10:02:30Z', direction: 'outbound' };
   const result = sumZoomTalkTime([{ ...call, id: 'fallback' }, { ...call, id: 'zero', talk_time: 0 }], 'UTC', now);
   assert.equal(result.daily.talk_time_seconds, 120);
   assert.equal(result.daily.connected_calls, 1);

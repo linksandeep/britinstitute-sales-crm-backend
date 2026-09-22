@@ -154,6 +154,11 @@ export interface UpdateLeadInput {
   folder?: string;
   source?: LeadSource;
   status?: LeadStatus;
+  statusReminder?: {
+    date: string;
+    time: string;
+    timeZone: 'Europe/London' | 'Asia/Kolkata';
+  };
   priority?: LeadPriority;
 }
 

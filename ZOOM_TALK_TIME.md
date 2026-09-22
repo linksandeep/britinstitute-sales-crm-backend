@@ -1,6 +1,6 @@
 # Personal Zoom Phone talk time
 
-Each signed-in CRM user's Dashboard displays Today and This week totals, with hours, minutes, seconds, and connected call counts. Separate elements of a transferred call contribute talk time while the call ID is counted once. The widget refreshes every minute while the page is visible and has its own Refresh button. Zoom reporting can lag behind a completed call. Zoom user inventory is cached for one minute and shared across requests.
+Each signed-in CRM user's Dashboard displays Today and This week totals, with hours, minutes, seconds, connected call counts, and total outbound calls dialed (including unanswered attempts). Separate elements of a transferred call contribute talk time while each call ID is counted once. The widget refreshes every minute while the page is visible and has its own Refresh button. Zoom reporting can lag behind a completed call. Zoom user inventory is cached for one minute and shared across requests.
 
 `GET /api/zoom-phone/my/talk-time?timezone=Asia%2FKolkata` requires the existing Bearer token. The server uses the token's CRM user ID; it does not accept another user's ID. The timezone must be an IANA timezone; omission defaults to UTC. Weekly totals run Sunday through today, matching existing CRM reports. Calls are grouped by their local start date.
 

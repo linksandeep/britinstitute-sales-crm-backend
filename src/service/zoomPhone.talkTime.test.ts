@@ -45,6 +45,7 @@ test('fetches all pages and attributes a shared account using assignment history
     const result = await zoomPhoneService.getMyTalkTime('user-a', timezone);
     assert.equal(result.linked, true);
     assert.equal(result.weekly.talk_time_seconds, 60);
+    assert.equal(result.weekly.dialed_calls, 1);
     assert.equal(visited.filter((path) => path.endsWith('/call_history')).length, 2);
     assert.ok(!visited.some((path) => path.includes('someone-else/call_history')));
   } finally {
@@ -72,7 +73,7 @@ test('personal endpoint always uses the authenticated user and rejects invalid t
       assert.equal(id, 'authenticated');
       assert.equal(timezone, 'Asia/Kolkata');
       called = true;
-      return { linked: false, timezone, updated_at: '', daily: { date: '', talk_time_seconds: 0, connected_calls: 0 }, weekly: { from: '', to: '', talk_time_seconds: 0, connected_calls: 0 } };
+      return { linked: false, timezone, updated_at: '', daily: { date: '', talk_time_seconds: 0, connected_calls: 0, dialed_calls: 0 }, weekly: { from: '', to: '', talk_time_seconds: 0, connected_calls: 0, dialed_calls: 0 } };
     };
     await getMyZoomTalkTime({ query: { userId: 'someone-else', timezone: 'Asia/Kolkata' }, user: { userId: 'authenticated' } } as unknown as Request, response);
     assert.equal(status, 200);
