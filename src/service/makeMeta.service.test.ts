@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ILead } from '../types';
-import { buildMetaFeedbackPayload, normalizeMakeMetaLeadInput } from './makeMeta.service';
+import { buildMetaFeedbackPayload, normalizeMakeMetaLeadInput, normalizePhoneIdentity } from './makeMeta.service';
 
 test('normalizes Make and Meta aliases into the CRM lead contract', () => {
   const lead = normalizeMakeMetaLeadInput({
@@ -39,6 +39,11 @@ test('reads contact answers from Meta field_data arrays', () => {
   assert.equal(lead.name, 'Test Person');
   assert.equal(lead.email, 'test@example.com');
   assert.equal(lead.phone, '919876543210');
+});
+
+test('normalizes phone formatting for repeat-lead identity matching', () => {
+  assert.equal(normalizePhoneIdentity('+91 (98765) 43210'), '919876543210');
+  assert.equal(normalizePhoneIdentity('+91-98765-43210'), '919876543210');
 });
 
 test('preserves invalid Meta contact values and the complete incoming payload', () => {

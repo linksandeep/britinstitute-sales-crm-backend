@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Lead from '../models/Lead';
 import DuplicateLead from '../models/DuplicateLead';
+import RetargetingLead from '../models/RetargetingLead';
 import User from '../models/User';
 import { getCsvFromGoogleSheet } from '../utils/googleSheet';
 import { applyLeadDateFilter } from '../utils/leadDateFilter';
@@ -340,6 +341,172 @@ interface GetLeadsResult {
   total: number;
 }
 
+const queryValues = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.map(String);
+  return value === undefined || value === null ? [] : [String(value)];
+};
+
+const isRetargetingFolderQuery = (folder: unknown): boolean =>
+  queryValues(folder).some((value) => value.toLowerCase() === 'retargeting');
+
+const getRetargetingLeadsService = async (
+  req: Request,
+  restrictToUserId?: string
+): Promise<GetLeadsResult & { page: number; limit: number }> => {
+  const pageNum = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+  const limitNum = Math.max(1, parseInt(String(req.query.limit || '10'), 10) || 10);
+  const eventFilter: Record<string, unknown> = {};
+  applyLeadDateFilter(eventFilter, req.query as Record<string, unknown>);
+
+  const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  if (search) {
+    const regex = new RegExp(escapeSearchText(search), 'i');
+    eventFilter.$or = [{ name: regex }, { email: regex }, { phone: regex }];
+  }
+
+  const requestedSources = queryValues(req.query.source);
+  if (requestedSources.length > 0 && !requestedSources.includes('Meta')) {
+    return { leads: [], total: 0, page: pageNum, limit: limitNum };
+  }
+
+  const linkedLeadFilter: Record<string, unknown> = {};
+  const accessUserId = restrictToUserId || (req.user?.role !== 'admin' ? req.user?.userId : undefined);
+  if (accessUserId && mongoose.Types.ObjectId.isValid(accessUserId)) {
+    linkedLeadFilter['existingLead.assignedTo'] = new mongoose.Types.ObjectId(accessUserId);
+  }
+
+  const statuses = queryValues(req.query.status);
+  if (statuses.length > 0) linkedLeadFilter['existingLead.status'] = { $in: statuses };
+
+  const priorities = queryValues(req.query.priority);
+  if (priorities.length > 0) linkedLeadFilter['existingLead.priority'] = { $in: priorities };
+
+  const assignees = queryValues(req.query.assignedTo);
+  if (req.user?.role === 'admin' && assignees.length > 0) {
+    const hasUnassigned = assignees.some((id) => ['null', 'unassigned'].includes(id));
+    const validAssignees = assignees
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    if (hasUnassigned && validAssignees.length > 0) {
+      linkedLeadFilter.$or = [
+        { 'existingLead.assignedTo': { $in: [null, undefined] } },
+        { 'existingLead.assignedTo': { $in: validAssignees } }
+      ];
+    } else if (hasUnassigned) {
+      linkedLeadFilter['existingLead.assignedTo'] = { $in: [null, undefined] };
+    } else if (validAssignees.length > 0) {
+      linkedLeadFilter['existingLead.assignedTo'] = { $in: validAssignees };
+    }
+  }
+
+  const pipeline: mongoose.PipelineStage[] = [
+    { $match: eventFilter },
+    {
+      $lookup: {
+        from: Lead.collection.name,
+        localField: 'existingLeadId',
+        foreignField: '_id',
+        as: 'existingLead'
+      }
+    },
+    { $unwind: '$existingLead' },
+    ...(Object.keys(linkedLeadFilter).length > 0 ? [{ $match: linkedLeadFilter } as mongoose.PipelineStage.Match] : []),
+    {
+      $lookup: {
+        from: User.collection.name,
+        localField: 'existingLead.assignedTo',
+        foreignField: '_id',
+        as: 'assignedToUser'
+      }
+    },
+    { $unwind: { path: '$assignedToUser', preserveNullAndEmptyArrays: true } },
+    { $sort: { createdAt: -1 } },
+    {
+      $facet: {
+        rows: [{ $skip: (pageNum - 1) * limitNum }, { $limit: limitNum }],
+        count: [{ $count: 'total' }]
+      }
+    }
+  ];
+
+  const [result] = await RetargetingLead.aggregate(pipeline);
+  const rows = (result?.rows || []).map((event: any) => ({
+    _id: event._id,
+    name: event.name || event.existingLead.name,
+    email: event.email || event.existingLead.email,
+    phone: event.phone || event.existingLead.phone,
+    whatsapp: event.whatsapp || event.existingLead.whatsapp,
+    position: event.position || event.existingLead.position || '',
+    folder: 'Retargeting',
+    label: 'Retargeting',
+    labels: ['Retargeting'],
+    source: 'Meta',
+    status: event.existingLead.status,
+    priority: event.existingLead.priority,
+    campaignName: event.campaignName,
+    adsetName: event.adsetName,
+    adName: event.adName,
+    metaLeadId: event.metaLeadId,
+    metaFormId: event.metaFormId,
+    metaPageId: event.metaPageId,
+    metaAdId: event.metaAdId,
+    metaCreatedTime: event.metaCreatedTime,
+    assignedTo: event.existingLead.assignedTo,
+    assignedBy: event.existingLead.assignedBy,
+    assignedToUser: event.assignedToUser,
+    notes: [],
+    leadScore: event.existingLead.leadScore,
+    isRetargeting: true,
+    linkedLeadId: event.existingLead._id,
+    linkedLead: {
+      _id: event.existingLead._id,
+      name: event.existingLead.name,
+      status: event.existingLead.status,
+      folder: event.existingLead.folder,
+      assignedTo: event.existingLead.assignedTo
+    },
+    matchReason: event.matchReason,
+    createdAt: event.createdAt,
+    updatedAt: event.updatedAt
+  }));
+
+  return {
+    leads: rows,
+    total: result?.count?.[0]?.total || 0,
+    page: pageNum,
+    limit: limitNum
+  };
+};
+
+export const countRetargetingLeads = async (
+  dateFilter: Record<string, unknown>,
+  assignedToUserId?: string
+): Promise<number> => {
+  const pipeline: mongoose.PipelineStage[] = [
+    { $match: dateFilter },
+    {
+      $lookup: {
+        from: Lead.collection.name,
+        localField: 'existingLeadId',
+        foreignField: '_id',
+        as: 'existingLead'
+      }
+    },
+    { $unwind: '$existingLead' }
+  ];
+
+  if (assignedToUserId && mongoose.Types.ObjectId.isValid(assignedToUserId)) {
+    pipeline.push({
+      $match: { 'existingLead.assignedTo': new mongoose.Types.ObjectId(assignedToUserId) }
+    });
+  }
+  pipeline.push({ $count: 'total' });
+
+  const [result] = await RetargetingLead.aggregate(pipeline);
+  return result?.total || 0;
+};
+
 export const getLeadsService = async (
   req: Request
 ): Promise<GetLeadsResult> => {
@@ -353,6 +520,10 @@ export const getLeadsService = async (
     folder,
     search
   } = req.query;
+
+  if (isRetargetingFolderQuery(folder)) {
+    return getRetargetingLeadsService(req);
+  }
 
   const pageNum = parseInt(page as string, 10);
   const limitNum = parseInt(limit as string, 10);
@@ -400,28 +571,36 @@ export const getLeadsService = async (
 
   // ---------------- 📂 FOLDER FILTER (UPDATED) ----------------
   if (folder) {
-    const folderArray = Array.isArray(folder) ? folder : [folder];
+    let folderArray = (Array.isArray(folder) ? folder : [folder]) as string[];
 
-    // Check if 'Uncategorized' is requested
-    const isUncategorizedSelected = folderArray.includes('Uncategorized');
+    // If status filter is also present and contains a value mistakenly passed as folder, ignore that folder value
+    if (status) {
+      const statusArray = (Array.isArray(status) ? status : [status]) as string[];
+      folderArray = folderArray.filter(f => !statusArray.includes(f));
+    }
 
-    // ONLY add folder filters if 'Uncategorized' is NOT the selection.
-    // If it is 'Uncategorized', we ignore this block entirely so the query returns ALL folders.
-    if (!isUncategorizedSelected) {
-      const hasEmpty = folderArray.some(f => ['', 'null', 'undefined'].includes(String(f)));
-      const otherFolders = folderArray.filter(f => !['', 'null', 'undefined'].includes(String(f)));
+    if (folderArray.length > 0) {
+      // Check if 'Uncategorized' is requested
+      const isUncategorizedSelected = folderArray.includes('Uncategorized');
 
-      if (hasEmpty && otherFolders.length === 0) {
-        filter.$or = [{ folder: '' }, { folder: { $exists: false } }, { folder: null }];
-      } else if (hasEmpty && otherFolders.length > 0) {
-        filter.$or = [
-          { folder: '' },
-          { folder: { $exists: false } },
-          { folder: null },
-          { folder: { $in: otherFolders } }
-        ];
-      } else {
-        filter.folder = { $in: folderArray };
+      // ONLY add folder filters if 'Uncategorized' is NOT the selection.
+      // If it is 'Uncategorized', we ignore this block entirely so the query returns ALL folders.
+      if (!isUncategorizedSelected) {
+        const hasEmpty = folderArray.some(f => ['', 'null', 'undefined'].includes(String(f)));
+        const otherFolders = folderArray.filter(f => !['', 'null', 'undefined'].includes(String(f)));
+
+        if (hasEmpty && otherFolders.length === 0) {
+          filter.$or = [{ folder: '' }, { folder: { $exists: false } }, { folder: null }];
+        } else if (hasEmpty && otherFolders.length > 0) {
+          filter.$or = [
+            { folder: '' },
+            { folder: { $exists: false } },
+            { folder: null },
+            { folder: { $in: otherFolders } }
+          ];
+        } else {
+          filter.folder = { $in: folderArray };
+        }
       }
     }
   }
@@ -628,6 +807,10 @@ export const getMyLeadsService = async (req: Request) => {
     search
   } = req.query;
 
+  if (isRetargetingFolderQuery(folder)) {
+    return getRetargetingLeadsService(req, req.user?.userId);
+  }
+
   const pageNum = parseInt(page as string, 10);
   const limitNum = parseInt(limit as string, 10);
   const skip = (pageNum - 1) * limitNum;
@@ -648,17 +831,25 @@ export const getMyLeadsService = async (req: Request) => {
   }
 
   if (folder) {
-    const folderArray = Array.isArray(folder) ? folder : [folder];
-    const hasEmpty = folderArray.includes('Uncategorized');
+    let folderArray = (Array.isArray(folder) ? folder : [folder]) as string[];
 
-    if (hasEmpty) {
-      filter.$or = [
-        { folder: '' },
-        { folder: { $exists: false } },
-        { folder: null }
-      ];
-    } else {
-      filter.folder = { $in: folderArray };
+    if (status) {
+      const statusArray = (Array.isArray(status) ? status : [status]) as string[];
+      folderArray = folderArray.filter(f => !statusArray.includes(f));
+    }
+
+    if (folderArray.length > 0) {
+      const hasEmpty = folderArray.includes('Uncategorized');
+
+      if (hasEmpty) {
+        filter.$or = [
+          { folder: '' },
+          { folder: { $exists: false } },
+          { folder: null }
+        ];
+      } else {
+        filter.folder = { $in: folderArray };
+      }
     }
   }
 
@@ -1019,7 +1210,10 @@ export const deleteAccount = async (_req: Request, res: Response) => {
 
     // 5. Delete DuplicateLead records that reference these leads
     if (leadIds.length > 0) {
-      await DuplicateLead.deleteMany({ existingLeadId: { $in: leadIds } });
+      await Promise.all([
+        DuplicateLead.deleteMany({ existingLeadId: { $in: leadIds } }),
+        RetargetingLead.deleteMany({ existingLeadId: { $in: leadIds } })
+      ]);
     }
 
     // 6. (Optional) Add other models here

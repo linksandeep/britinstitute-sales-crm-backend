@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
 import mongoose from 'mongoose';
 import Lead from '../models/Lead';
+import RetargetingLead from '../models/RetargetingLead';
 import User from '../models/User';
 import type { ILead, MakeMetaLeadInput, MetaFeedbackPayload } from '../types';
 
-export type MakeMetaUpsertOutcome = 'created' | 'linked' | 'duplicate';
+export type MakeMetaUpsertOutcome = 'created' | 'retargeting' | 'duplicate';
 
 export interface MakeMetaUpsertResult {
   outcome: MakeMetaUpsertOutcome;
   lead: ILead;
+  retargetingLead?: Record<string, unknown>;
 }
 
 export interface MetaFeedbackResult {
@@ -57,6 +59,14 @@ const phonePattern = /^[+]?([\d\s\-().]){7,25}$/;
 
 const normalizePhone = (value: string): string =>
   value.replace(/[^\d+\-().\s]/g, '').replace(/\s+/g, ' ').trim();
+
+export const normalizePhoneIdentity = (value: string): string => value.replace(/\D/g, '');
+
+const phoneIdentityPattern = (value: string): RegExp | null => {
+  const digits = normalizePhoneIdentity(value);
+  if (digits.length < 7) return null;
+  return new RegExp(`^\\D*${digits.split('').join('\\D*')}\\D*$`);
+};
 
 const parseMetaCreatedTime = (value: string): Date | undefined => {
   if (!value) return undefined;
@@ -145,53 +155,89 @@ const buildAuditNote = (leadData: MakeMetaLeadInput): string => [
   leadData.createdTime ? `Meta created: ${leadData.createdTime}` : '',
 ].filter(Boolean).join(' ');
 
-const applyMetaData = (lead: ILead, leadData: MakeMetaLeadInput): void => {
-  lead.metaLeadId = leadData.metaLeadId;
-  lead.source = 'Meta';
-  lead.folder = lead.folder || leadData.folder || 'Meta Lead Ads';
-  lead.campaignName = leadData.campaignName || lead.campaignName || '';
-  lead.adsetName = leadData.adsetName || lead.adsetName || '';
-  lead.adName = leadData.adName || lead.adName || '';
-  lead.metaFormId = leadData.formId || lead.metaFormId || '';
-  lead.metaPageId = leadData.pageId || lead.metaPageId || '';
-  lead.metaAdId = leadData.adId || lead.metaAdId || '';
-  lead.metaOriginalName = leadData.originalName;
-  lead.metaOriginalEmail = leadData.originalEmail;
-  lead.metaOriginalPhone = leadData.originalPhone;
-  lead.metaRawPayload = leadData.rawPayload;
-
-  const metaCreatedTime = parseMetaCreatedTime(leadData.createdTime || '');
-  if (metaCreatedTime) lead.metaCreatedTime = metaCreatedTime;
-};
-
 export const upsertMakeMetaLead = async (leadData: MakeMetaLeadInput): Promise<MakeMetaUpsertResult> => {
   const existingByMetaId = await Lead.findOne({ metaLeadId: leadData.metaLeadId });
   if (existingByMetaId) {
     return { outcome: 'duplicate', lead: existingByMetaId };
   }
 
-  const contactMatches: Array<Record<string, string>> = [];
-  if (emailPattern.test(leadData.email)) contactMatches.push({ email: leadData.email });
-  if (phonePattern.test(leadData.phone)) contactMatches.push({ phone: leadData.phone });
-  const existingByContact = contactMatches.length
-    ? await Lead.findOne({ $or: contactMatches })
+  const existingRetargeting = await RetargetingLead.findOne({ metaLeadId: leadData.metaLeadId }).lean();
+  if (existingRetargeting) {
+    const linkedLead = await Lead.findById(existingRetargeting.existingLeadId);
+    if (!linkedLead) {
+      throw new Error('The original CRM lead linked to this retargeting event no longer exists');
+    }
+    return {
+      outcome: 'duplicate',
+      lead: linkedLead,
+      retargetingLead: existingRetargeting as unknown as Record<string, unknown>,
+    };
+  }
+
+  const existingByEmail = emailPattern.test(leadData.email)
+    ? await Lead.findOne({ email: leadData.email })
     : null;
+  const normalizedPhonePattern = phonePattern.test(leadData.phone)
+    ? phoneIdentityPattern(leadData.phone)
+    : null;
+  const existingByPhone = !existingByEmail && normalizedPhonePattern
+    ? await Lead.findOne({ phone: normalizedPhonePattern })
+    : null;
+  const existingByContact = existingByEmail || existingByPhone;
   const systemUserId = await getSystemUserId();
 
   if (existingByContact) {
-    applyMetaData(existingByContact, leadData);
+    const emailMatches = emailPattern.test(leadData.email) && existingByContact.email === leadData.email;
+    const phoneMatches = phonePattern.test(leadData.phone) &&
+      normalizePhoneIdentity(existingByContact.phone) === normalizePhoneIdentity(leadData.phone);
+    const matchReason = emailMatches && phoneMatches
+      ? 'EMAIL_PHONE_EXISTS'
+      : emailMatches
+        ? 'EMAIL_EXISTS'
+        : 'PHONE_EXISTS';
+
+    const retargetingLead = await RetargetingLead.create({
+      metaLeadId: leadData.metaLeadId,
+      existingLeadId: existingByContact._id,
+      name: leadData.originalName,
+      email: leadData.email,
+      phone: leadData.phone,
+      whatsapp: leadData.whatsapp || '',
+      position: leadData.position || '',
+      matchReason,
+      campaignName: leadData.campaignName || '',
+      adsetName: leadData.adsetName || '',
+      adName: leadData.adName || '',
+      metaFormId: leadData.formId || '',
+      metaPageId: leadData.pageId || '',
+      metaAdId: leadData.adId || '',
+      metaCreatedTime: parseMetaCreatedTime(leadData.createdTime || ''),
+      rawPayload: leadData.rawPayload,
+    });
 
     if (systemUserId) {
-      existingByContact.notes.push({
-        id: new mongoose.Types.ObjectId().toString(),
-        content: buildAuditNote(leadData),
-        createdBy: systemUserId,
-        createdAt: new Date(),
+      await Lead.updateOne(
+        { _id: existingByContact._id },
+        {
+          $push: {
+            notes: {
+              id: new mongoose.Types.ObjectId().toString(),
+              content: `Retargeting enquiry received and linked to this lead. ${buildAuditNote(leadData)}`,
+              createdBy: systemUserId,
+              createdAt: new Date(),
+            }
+          }
+        }
+      ).catch((error) => {
+        console.error('Retargeting audit note could not be added:', error);
       });
     }
 
-    await existingByContact.save({ validateModifiedOnly: true });
-    return { outcome: 'linked', lead: existingByContact };
+    return {
+      outcome: 'retargeting',
+      lead: existingByContact,
+      retargetingLead: retargetingLead.toObject() as unknown as Record<string, unknown>,
+    };
   }
 
   const contactValues = crmContactValues(leadData);

@@ -1,13 +1,14 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import Lead from '../models/Lead';
+import RetargetingLead from '../models/RetargetingLead';
 import type { 
   CreateLeadInput, 
   UpdateLeadInput, 
   AssignLeadInput, 
   AddNoteInput
 } from '../types';
-import { assignLeadsService, getAdminLeadStatsService, getAllChatsService, getDuplicateAndUncategorizedCountService, getDuplicateLeadsService, getLeadsService, getMyLeadsService, importLeadsFromGoogleSheetService, searchLeadsService } from '../service/lead.service';
+import { assignLeadsService, countRetargetingLeads, getAdminLeadStatsService, getAllChatsService, getDuplicateAndUncategorizedCountService, getDuplicateLeadsService, getLeadsService, getMyLeadsService, importLeadsFromGoogleSheetService, searchLeadsService } from '../service/lead.service';
 import { sendError } from '../utils/sendError';
 import { getLeadDateFilter } from '../utils/leadDateFilter';
 import { sendMetaStatusFeedback } from '../service/makeMeta.service';
@@ -428,7 +429,10 @@ export const deleteLead = async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    await Lead.findByIdAndDelete(id);
+    await Promise.all([
+      Lead.findByIdAndDelete(id),
+      RetargetingLead.deleteMany({ existingLeadId: lead._id })
+    ]);
 
     res.status(200).json({
       success: true,
@@ -819,7 +823,7 @@ export const getFolderCounts = async (req: Request, res: Response): Promise<any>
 
     const dateFilter = getLeadDateFilter(req.query as Record<string, unknown>);
 
-    const statsData = await Lead.aggregate([
+    const [statsData, retargetingCount] = await Promise.all([Lead.aggregate([
       { $match: { assignedTo: userObjectId, ...dateFilter } },
       {
         $facet: {
@@ -844,7 +848,7 @@ export const getFolderCounts = async (req: Request, res: Response): Promise<any>
           ]
         }
       }
-    ]);
+    ]), countRetargetingLeads(dateFilter, userId)]);
 
     const result = {
       folderStats: {} as Record<string, number>,
@@ -868,6 +872,7 @@ export const getFolderCounts = async (req: Request, res: Response): Promise<any>
         result.statusStats[item._id] = item.count;
       });
     }
+    if (retargetingCount > 0) result.folderStats.Retargeting = retargetingCount;
 
     return res.status(200).json({
       success: true,
@@ -914,7 +919,7 @@ export const getFolderCountsForAdmin = async (req: Request, res: Response): Prom
       ...getLeadDateFilter(req.query as Record<string, unknown>)
     };
 
-    const statsData = await Lead.aggregate([
+    const [statsData, retargetingCount] = await Promise.all([Lead.aggregate([
       { $match: baseFilter }, // Filter applied here
       {
         $facet: {
@@ -937,7 +942,10 @@ export const getFolderCountsForAdmin = async (req: Request, res: Response): Prom
           ]
         }
       }
-    ]);
+    ]), countRetargetingLeads(
+      getLeadDateFilter(req.query as Record<string, unknown>),
+      userRole === 'admin' ? undefined : userId
+    )]);
 
     const result = {
       folderStats: {} as Record<string, number>,
@@ -961,6 +969,7 @@ export const getFolderCountsForAdmin = async (req: Request, res: Response): Prom
         result.statusStats[item._id] = item.count;
       });
     }
+    if (retargetingCount > 0) result.folderStats.Retargeting = retargetingCount;
 
     return res.status(200).json({
       success: true,

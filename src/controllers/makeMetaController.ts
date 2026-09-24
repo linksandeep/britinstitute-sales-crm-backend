@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import Lead from '../models/Lead';
+import RetargetingLead from '../models/RetargetingLead';
 import {
   normalizeMakeMetaLeadInput,
   sendMetaStatusFeedback,
@@ -23,7 +24,7 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
     }
 
     const result = await upsertMakeMetaLead(leadData);
-    const shouldSendFeedback = result.outcome !== 'duplicate';
+    const shouldSendFeedback = result.outcome === 'created';
     const initialEventTime = result.lead.metaCreatedTime || result.lead.createdAt;
     const feedback = shouldSendFeedback
       ? await sendMetaStatusFeedback(result.lead, undefined, initialEventTime)
@@ -33,12 +34,13 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
       success: true,
       message: result.outcome === 'created'
         ? 'Meta lead created successfully'
-        : result.outcome === 'linked'
-          ? 'Meta lead linked to an existing CRM lead'
+        : result.outcome === 'retargeting'
+          ? 'Repeat Meta lead saved in Retargeting and linked to the existing CRM lead'
           : 'Meta lead was already processed',
       data: {
         outcome: result.outcome,
         lead: result.lead,
+        ...(result.retargetingLead ? { retargetingLead: result.retargetingLead } : {}),
         feedback,
       },
     });
@@ -46,13 +48,10 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
     const mongoError = error as { code?: number; keyValue?: Record<string, unknown> };
     if (mongoError.code === 11000) {
       const leadData = normalizeMakeMetaLeadInput(req.body as Record<string, unknown>);
-      const existingLead = await Lead.findOne({
-        $or: [
-          { metaLeadId: leadData.metaLeadId },
-          { email: leadData.email },
-          { phone: leadData.phone },
-        ],
-      });
+      const existingRetargeting = await RetargetingLead.findOne({ metaLeadId: leadData.metaLeadId }).lean();
+      const existingLead = existingRetargeting
+        ? await Lead.findById(existingRetargeting.existingLeadId)
+        : await Lead.findOne({ metaLeadId: leadData.metaLeadId });
 
       res.status(200).json({
         success: true,
@@ -60,6 +59,7 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
         data: {
           outcome: 'duplicate',
           lead: existingLead,
+          ...(existingRetargeting ? { retargetingLead: existingRetargeting } : {}),
           feedback: { sent: false, skipped: true },
         },
       });

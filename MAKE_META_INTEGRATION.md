@@ -3,7 +3,7 @@
 This integration creates a closed loop:
 
 1. Meta Lead Ads sends a new lead to Make.
-2. Make creates or links the lead in this CRM.
+2. Make creates the lead, or records a repeat contact in the **Retargeting** folder and links it to the original CRM lead.
 3. When the CRM status changes, the backend sends that stage to a Make custom webhook.
 4. Make passes the stage to **Facebook Conversions API for CRM**.
 
@@ -48,9 +48,9 @@ Map the Facebook module output into this body:
 }
 ```
 
-The API also accepts Make/Meta snake-case names such as `lead_id`, `full_name`, `phone_number`, `campaign_name`, and `created_time`. Only `metaLeadId` is required. Missing, placeholder, or invalid contact values do not reject the lead: the original values and complete incoming payload are retained on the Meta lead, while unique internal fallback values keep the CRM record usable. Repeated delivery of the same Facebook Lead ID is idempotent and returns the existing lead instead of creating a duplicate.
+The API also accepts Make/Meta snake-case names such as `lead_id`, `full_name`, `phone_number`, `campaign_name`, and `created_time`. Only `metaLeadId` is required. Missing, placeholder, or invalid contact values do not reject the lead: the original values and complete incoming payload are retained on the Meta lead, while unique internal fallback values keep the CRM record usable. Repeated delivery of the same Facebook Lead ID is idempotent and returns the existing record instead of creating a duplicate. A new Facebook Lead ID whose normalized email or phone already belongs to a CRM lead creates a separate Retargeting event. The original lead keeps its stage, assignment, notes, and conversation history.
 
-Expected success outcomes are `created`, `linked` (an existing email/phone was linked to Meta), or `duplicate`.
+Expected success outcomes are `created`, `retargeting` (a repeat contact linked to the original lead), or `duplicate`.
 
 ## Scenario 2: CRM status → Meta feedback
 
