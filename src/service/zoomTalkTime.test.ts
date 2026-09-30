@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getTalkTimeRange, sumZoomTalkTime } from './zoomTalkTime';
+import { getTalkTimeRange, sumZoomCallSummary, sumZoomTalkTime } from './zoomTalkTime';
 
 const now = new Date('2026-09-15T12:00:00Z');
 
@@ -11,8 +11,31 @@ test('separates today from Sunday-to-today and excludes old and future calls', (
     { id: 'old', start_time: '2026-09-12T10:00:00Z', talk_time: 999, direction: 'outbound' },
     { id: 'future', start_time: '2026-09-15T13:00:00Z', talk_time: 999, direction: 'outbound' }
   ], 'UTC', now);
-  assert.deepEqual(result.daily, { date: '2026-09-15', talk_time_seconds: 125, connected_calls: 1, dialed_calls: 1 });
-  assert.deepEqual(result.weekly, { from: '2026-09-13', to: '2026-09-15', talk_time_seconds: 3725, connected_calls: 1, dialed_calls: 1 });
+  assert.equal(result.daily.date, '2026-09-15');
+  assert.equal(result.daily.talk_time_seconds, 125);
+  assert.equal(result.daily.connected_calls, 1);
+  assert.equal(result.daily.dialed_calls, 1);
+  assert.equal(result.weekly.from, '2026-09-13');
+  assert.equal(result.weekly.to, '2026-09-15');
+  assert.equal(result.weekly.talk_time_seconds, 3725);
+  assert.equal(result.weekly.connected_calls, 1);
+  assert.equal(result.weekly.dialed_calls, 1);
+});
+
+test('reports call attempts and unique external contacts with explicit definitions', () => {
+  const result = sumZoomCallSummary([
+    { call_id: 'out-1', call_element_id: 'out-1-a', start_time: '2026-09-15T09:00:00Z', direction: 'outbound', callee_did_number: '+44 7700 900001', talk_time: 60 },
+    { call_id: 'out-2', call_element_id: 'out-2-a', start_time: '2026-09-15T10:00:00Z', direction: 'outbound', callee_did_number: '+44 7700 900001', result: 'no_answer' },
+    { call_id: 'in-1', call_element_id: 'in-1-a', start_time: '2026-09-15T11:00:00Z', direction: 'incoming', caller_did_number: '+44 7700 900002', talk_time: 30 }
+  ], 'UTC', '2026-09-15', '2026-09-15', now);
+
+  assert.equal(result.total_calls, 3);
+  assert.equal(result.outbound_calls, 2);
+  assert.equal(result.inbound_calls, 1);
+  assert.equal(result.connected_outbound_calls, 1);
+  assert.equal(result.unique_contacts, 2);
+  assert.equal(result.unique_outbound_contacts, 1);
+  assert.equal(result.talk_time_seconds, 90);
 });
 
 test('uses local calendar boundaries on either side of UTC', () => {

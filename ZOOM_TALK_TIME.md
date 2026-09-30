@@ -1,8 +1,10 @@
 # Personal Zoom Phone talk time
 
-Each signed-in CRM user's Dashboard displays Today and This week totals, with hours, minutes, seconds, connected call counts, and total outbound calls dialed (including unanswered attempts). Separate elements of a transferred call contribute talk time while each call ID is counted once. The widget refreshes every minute while the page is visible and has its own Refresh button. Zoom reporting can lag behind a completed call. Zoom user inventory is cached for one minute and shared across requests.
+Each signed-in CRM user's Dashboard displays Today and This week totals for actual talk time, unique Zoom calls, outbound attempts, answered outbound calls, inbound calls, and unique external contacts. Separate elements of a transferred call contribute talk time while each call ID is counted once. The widget refreshes every minute while the page is visible and has its own Refresh button. Zoom reporting can lag behind a completed call. Zoom user inventory is cached for one minute and shared across requests.
 
 `GET /api/zoom-phone/my/talk-time?timezone=Asia%2FKolkata` requires the existing Bearer token. The server uses the token's CRM user ID; it does not accept another user's ID. The timezone must be an IANA timezone; omission defaults to UTC. Weekly totals run Sunday through today, matching existing CRM reports. Calls are grouped by their local start date.
+
+`GET /api/zoom-phone/users/{crmUserId}/call-summary?from=YYYY-MM-DD&to=YYYY-MM-DD&timezone=Europe%2FLondon` is admin-only. It uses the same per-user Zoom call-history source, ownership rules, and metric definitions as the salesperson Dashboard, allowing the selected-user admin report to show directly comparable figures for any date range. The admin account call-log cards remain a separate coverage view and are explicitly labelled as unique contacts, call-log records, and summed log duration.
 
 ## Zoom configuration
 

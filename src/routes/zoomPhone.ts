@@ -12,6 +12,7 @@ import {
   getZoomPhoneAssignments,
   getZoomPhoneStatus,
   getMyZoomTalkTime,
+  getUserZoomCallSummary,
   streamAccountZoomRecording,
   streamLeadZoomRecording
 } from '../controllers/zoomPhoneController';
@@ -27,6 +28,7 @@ router.get('/status', getZoomPhoneStatus);
 router.get('/my/talk-time', getMyZoomTalkTime);
 
 // Admin routes with standard auth
+router.get('/users/:userId/call-summary', requireAdmin, getUserZoomCallSummary);
 router.get('/account/analytics', requireAdmin, getAccountZoomAnalytics);
 router.get('/account/call-logs', requireAdmin, getAccountZoomCallLogs);
 router.get('/account/inventory', requireAdmin, getAccountZoomInventory);

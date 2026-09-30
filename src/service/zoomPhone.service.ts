@@ -2,7 +2,7 @@ import Lead from '../models/Lead';
 import User from '../models/User';
 import ZoomPhoneNumberAssignment from '../models/ZoomPhoneNumberAssignment';
 import type { ILead } from '../types';
-import { getTalkTimeRange, sumZoomTalkTime, type TalkTimeCall } from './zoomTalkTime';
+import { getTalkTimeRange, sumZoomCallSummary, sumZoomTalkTime, type TalkTimeCall } from './zoomTalkTime';
 
 const ZOOM_API_BASE_URL = 'https://api.zoom.us/v2';
 const ZOOM_OAUTH_URL = 'https://zoom.us/oauth/token';
@@ -1994,6 +1994,94 @@ const getTalkTimePhoneUsers = async () => {
   return talkTimeUsersPending;
 };
 
+const getPaddedTalkTimeQueryRange = (from: string, to: string) => {
+  const queryFrom = new Date(`${from}T00:00:00Z`);
+  const queryTo = new Date(`${to}T00:00:00Z`);
+  queryFrom.setUTCDate(queryFrom.getUTCDate() - 1);
+  queryTo.setUTCDate(queryTo.getUTCDate() + 1);
+  return {
+    queryFrom: queryFrom.toISOString().slice(0, 10),
+    queryTo: queryTo.toISOString().slice(0, 10)
+  };
+};
+
+const fetchUserTalkTimeCalls = async (
+  userId: string,
+  queryFrom: string,
+  queryTo: string,
+  now: Date
+) => {
+  const [user, assignments, phoneUsers] = await Promise.all([
+    User.findById(userId).select('email phone').lean(),
+    ZoomPhoneNumberAssignment.find({
+      assignedAt: { $lte: now },
+      $or: [{ releasedAt: { $exists: false } }, { releasedAt: { $gte: new Date(`${queryFrom}T00:00:00Z`) } }]
+    }).lean(),
+    getTalkTimePhoneUsers()
+  ]);
+  if (!user) throw Object.assign(new Error('CRM user not found'), { statusCode: 404 });
+
+  const ownAssignments = assignments.filter((assignment) => String(assignment.crmUser) === userId);
+  const assignmentMatchesUser = (assignment: typeof assignments[number], phoneUser: ZoomPhoneUser) =>
+    Boolean(
+      (assignment.zoomPhoneUserId && [phoneUser.id, phoneUser.phone_user_id].includes(assignment.zoomPhoneUserId)) ||
+      (assignment.zoomPhoneUserEmail && normalizeEmail(assignment.zoomPhoneUserEmail) === normalizeEmail(phoneUser.email)) ||
+      phoneUser.phone_numbers?.some((number) =>
+        phoneVariantsMatch(normalizePhoneNumber(number.number || number.display_number), assignment.normalizedNumber))
+    );
+  const candidates = new Map<string, ZoomPhoneUser>();
+  for (const phoneUser of phoneUsers) {
+    const id = phoneUser.id || phoneUser.phone_user_id;
+    if (id && (normalizeEmail(phoneUser.email) === normalizeEmail(user.email) ||
+      ownAssignments.some((assignment) => assignmentMatchesUser(assignment, phoneUser)))) {
+      candidates.set(id, phoneUser);
+    }
+  }
+  // Include a previously assigned Zoom account even if it left the current inventory.
+  for (const assignment of ownAssignments) {
+    const id = assignment.zoomPhoneUserId;
+    if (id && !candidates.has(id)) candidates.set(id, { id, email: assignment.zoomPhoneUserEmail || '' });
+  }
+
+  const calls: TalkTimeCall[] = [];
+  for (const [id, phoneUser] of candidates) {
+    let nextPageToken: string | undefined;
+    let pages = 0;
+    do {
+      const query: Record<string, string> = { from: queryFrom, to: queryTo, page_size: '300' };
+      if (nextPageToken) query.next_page_token = nextPageToken;
+      const response = await requestZoomJson<{
+        call_elements?: TalkTimeCall[]; call_logs?: TalkTimeCall[]; next_page_token?: string;
+      }>(`/phone/users/${encodeURIComponent(id)}/call_history`, query);
+      if (!Array.isArray(response.call_elements) && !Array.isArray(response.call_logs)) {
+        throw Object.assign(new Error('Zoom returned an unexpected call history response'), { statusCode: 502 });
+      }
+      for (const call of response.call_elements || response.call_logs || []) {
+        const timestamp = Date.parse(call.start_time || call.date_time || call.answer_time || '');
+        const activeAssignments = assignments.filter((assignment) =>
+          assignment.assignedAt.getTime() <= timestamp &&
+          (!assignment.releasedAt || timestamp < assignment.releasedAt.getTime()));
+        const agentNumber = /outbound|outgoing/i.test(call.direction || '')
+          ? call.caller_did_number : call.callee_did_number;
+        const numberAssignments = activeAssignments.filter((assignment) =>
+          phoneVariantsMatch(normalizePhoneNumber(agentNumber), assignment.normalizedNumber));
+        const relevantAssignments = numberAssignments.length ? numberAssignments
+          : activeAssignments.filter((assignment) => assignmentMatchesUser(assignment, phoneUser));
+        const owners = new Set(relevantAssignments.map((assignment) => String(assignment.crmUser)));
+        const isOwnCall = owners.size ? owners.size === 1 && owners.has(userId)
+          : !assignments.some((assignment) => assignmentMatchesUser(assignment, phoneUser)) &&
+            normalizeEmail(phoneUser.email) === normalizeEmail(user.email);
+        if (isOwnCall) calls.push(call);
+      }
+      nextPageToken = response.next_page_token;
+      pages += 1;
+    } while (nextPageToken && pages < 100);
+    if (nextPageToken) throw Object.assign(new Error('Zoom call history is incomplete; please retry later'), { statusCode: 502 });
+  }
+
+  return { calls, linked: candidates.size > 0 };
+};
+
 /**
  * Persist the latest completed Zoom Phone contact for each matched CRM lead.
  * Keeping this denormalized on Lead makes list sorting/filtering a local MongoDB
@@ -2074,74 +2162,23 @@ export const zoomPhoneService = {
     ensureConfigured();
     const now = new Date();
     const range = getTalkTimeRange(timeZone, now);
-    const [user, assignments, phoneUsers] = await Promise.all([
-      User.findById(userId).select('email phone').lean(),
-      ZoomPhoneNumberAssignment.find({
-        assignedAt: { $lte: now },
-        $or: [{ releasedAt: { $exists: false } }, { releasedAt: { $gte: new Date(`${range.queryFrom}T00:00:00Z`) } }]
-      }).lean(),
-      getTalkTimePhoneUsers()
-    ]);
-    if (!user) throw Object.assign(new Error('CRM user not found'), { statusCode: 404 });
-    const ownAssignments = assignments.filter((assignment) => String(assignment.crmUser) === userId);
-    const assignmentMatchesUser = (assignment: typeof assignments[number], phoneUser: ZoomPhoneUser) =>
-      Boolean(
-        (assignment.zoomPhoneUserId && [phoneUser.id, phoneUser.phone_user_id].includes(assignment.zoomPhoneUserId)) ||
-        (assignment.zoomPhoneUserEmail && normalizeEmail(assignment.zoomPhoneUserEmail) === normalizeEmail(phoneUser.email)) ||
-        phoneUser.phone_numbers?.some((number) =>
-          phoneVariantsMatch(normalizePhoneNumber(number.number || number.display_number), assignment.normalizedNumber))
-      );
-    const candidates = new Map<string, ZoomPhoneUser>();
-    for (const phoneUser of phoneUsers) {
-      const id = phoneUser.id || phoneUser.phone_user_id;
-      if (id && (normalizeEmail(phoneUser.email) === normalizeEmail(user.email) ||
-        ownAssignments.some((assignment) => assignmentMatchesUser(assignment, phoneUser)))) {
-        candidates.set(id, phoneUser);
-      }
-    }
-    // Include a previously assigned Zoom account even if it left the current inventory.
-    for (const assignment of ownAssignments) {
-      const id = assignment.zoomPhoneUserId;
-      if (id && !candidates.has(id)) candidates.set(id, { id, email: assignment.zoomPhoneUserEmail || '' });
-    }
-    const calls: TalkTimeCall[] = [];
-    for (const [id, phoneUser] of candidates) {
-      let nextPageToken: string | undefined;
-      let pages = 0;
-      do {
-        const query: Record<string, string> = {
-          from: range.queryFrom, to: range.queryTo, page_size: '300'
-        };
-        if (nextPageToken) query.next_page_token = nextPageToken;
-        const response = await requestZoomJson<{
-          call_elements?: TalkTimeCall[]; call_logs?: TalkTimeCall[]; next_page_token?: string;
-        }>(`/phone/users/${encodeURIComponent(id)}/call_history`, query);
-        if (!Array.isArray(response.call_elements) && !Array.isArray(response.call_logs)) {
-          throw Object.assign(new Error('Zoom returned an unexpected call history response'), { statusCode: 502 });
-        }
-        for (const call of response.call_elements || response.call_logs || []) {
-          const timestamp = Date.parse(call.start_time || call.date_time || call.answer_time || '');
-          const activeAssignments = assignments.filter((assignment) =>
-            assignment.assignedAt.getTime() <= timestamp &&
-            (!assignment.releasedAt || timestamp < assignment.releasedAt.getTime()));
-          const agentNumber = /outbound|outgoing/i.test(call.direction || '')
-            ? call.caller_did_number : call.callee_did_number;
-          const numberAssignments = activeAssignments.filter((assignment) =>
-            phoneVariantsMatch(normalizePhoneNumber(agentNumber), assignment.normalizedNumber));
-          const relevantAssignments = numberAssignments.length ? numberAssignments
-            : activeAssignments.filter((assignment) => assignmentMatchesUser(assignment, phoneUser));
-          const owners = new Set(relevantAssignments.map((assignment) => String(assignment.crmUser)));
-          const isOwnCall = owners.size ? owners.size === 1 && owners.has(userId)
-            : !assignments.some((assignment) => assignmentMatchesUser(assignment, phoneUser)) &&
-              normalizeEmail(phoneUser.email) === normalizeEmail(user.email);
-          if (isOwnCall) calls.push(call);
-        }
-        nextPageToken = response.next_page_token;
-        pages += 1;
-      } while (nextPageToken && pages < 100);
-      if (nextPageToken) throw Object.assign(new Error('Zoom call history is incomplete; please retry later'), { statusCode: 502 });
-    }
-    return { ...sumZoomTalkTime(calls, timeZone, now), linked: candidates.size > 0 };
+    const result = await fetchUserTalkTimeCalls(userId, range.queryFrom, range.queryTo, now);
+    return { ...sumZoomTalkTime(result.calls, timeZone, now), linked: result.linked };
+  },
+
+  getUserCallSummary: async (userId: string, timeZone: string, query: ZoomPhoneQuery) => {
+    ensureConfigured();
+    const now = new Date();
+    const { from, to } = buildDateRange(query);
+    if (from > to) throw Object.assign(new Error('From date cannot be after to date'), { statusCode: 400 });
+    const paddedRange = getPaddedTalkTimeQueryRange(from, to);
+    const result = await fetchUserTalkTimeCalls(userId, paddedRange.queryFrom, paddedRange.queryTo, now);
+    return {
+      ...sumZoomCallSummary(result.calls, timeZone, from, to, now),
+      linked: result.linked,
+      timezone: timeZone,
+      updated_at: now.toISOString()
+    };
   },
   getStatus: () => {
     const missing = getMissingConfig();

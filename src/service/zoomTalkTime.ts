@@ -14,6 +14,22 @@ export interface TalkTimeCall {
   direction?: string;
   caller_did_number?: string;
   callee_did_number?: string;
+  caller_number?: string;
+  callee_number?: string;
+}
+
+export interface ZoomCallSummary {
+  from: string;
+  to: string;
+  talk_time_seconds: number;
+  total_calls: number;
+  inbound_calls: number;
+  outbound_calls: number;
+  connected_calls: number;
+  connected_outbound_calls: number;
+  unique_contacts: number;
+  unique_outbound_contacts: number;
+  connected_unique_contacts: number;
 }
 
 export const getTalkTimeDate = (date: Date, timeZone: string) => {
@@ -37,33 +53,59 @@ export const getTalkTimeRange = (timeZone: string, now = new Date()) => {
   return { today, from, queryFrom: queryFrom.toISOString().slice(0, 10), queryTo: queryTo.toISOString().slice(0, 10) };
 };
 
-export const sumZoomTalkTime = (calls: TalkTimeCall[], timeZone: string, now = new Date()) => {
-  const range = getTalkTimeRange(timeZone, now);
-  const daily = { date: range.today, talk_time_seconds: 0, connected_calls: 0, dialed_calls: 0 };
-  const weekly = { from: range.from, to: range.today, talk_time_seconds: 0, connected_calls: 0, dialed_calls: 0 };
-  const seen = new Set<string>();
-  const dailyCalls = new Set<string>();
-  const weeklyCalls = new Set<string>();
-  const dailyDialedCalls = new Set<string>();
-  const weeklyDialedCalls = new Set<string>();
+const normalizeContactNumber = (value?: string) => (value || '').replace(/\D/g, '');
+
+export const sumZoomCallSummary = (
+  calls: TalkTimeCall[],
+  timeZone: string,
+  from: string,
+  to: string,
+  now = new Date()
+): ZoomCallSummary => {
+  const callIds = new Set<string>();
+  const inboundCallIds = new Set<string>();
+  const outboundCallIds = new Set<string>();
+  const connectedCallIds = new Set<string>();
+  const connectedOutboundCallIds = new Set<string>();
+  const contacts = new Set<string>();
+  const outboundContacts = new Set<string>();
+  const connectedContacts = new Set<string>();
+  const seenElements = new Set<string>();
+  let talkTimeSeconds = 0;
+
   for (const call of calls) {
     const startedAt = call.start_time || call.date_time || call.answer_time || call.answer_start_time;
     if (!startedAt) continue;
     const timestamp = new Date(startedAt);
     if (!Number.isFinite(timestamp.getTime()) || timestamp > now) continue;
     const date = getTalkTimeDate(timestamp, timeZone);
-    if (date < range.from || date > range.today) continue;
-    const key = call.call_element_id || call.id ||
-      `${call.call_id || ''}:${startedAt}:${call.direction || ''}:${call.caller_did_number || ''}:${call.callee_did_number || ''}`;
-    const callId = call.call_id || key;
-    const isOutbound = /outbound|outgoing/i.test(call.direction || '');
-    if (isOutbound) {
-      weeklyDialedCalls.add(callId);
-      if (date === range.today) dailyDialedCalls.add(callId);
+    if (date < from || date > to) continue;
+
+    const elementKey = call.call_element_id || call.id ||
+      `${call.call_id || ''}:${startedAt}:${call.direction || ''}:${call.caller_did_number || call.caller_number || ''}:${call.callee_did_number || call.callee_number || ''}`;
+    const callId = call.call_id || elementKey;
+    const direction = (call.direction || '').toLowerCase();
+    const isOutbound = /outbound|outgoing/.test(direction);
+    const isInbound = /inbound|incoming/.test(direction);
+    const contact = normalizeContactNumber(
+      isOutbound
+        ? call.callee_did_number || call.callee_number
+        : isInbound
+          ? call.caller_did_number || call.caller_number
+          : undefined
+    );
+
+    callIds.add(callId);
+    if (isOutbound) outboundCallIds.add(callId);
+    if (isInbound) inboundCallIds.add(callId);
+    if (contact) {
+      contacts.add(contact);
+      if (isOutbound) outboundContacts.add(contact);
     }
+
     const result = (call.result || call.call_result || '').toLowerCase().replace(/[_-]/g, ' ');
     if (/missed|no answer|unanswered|voicemail|busy|failed|blocked|rejected|cancel|other member|answered by other/.test(result)) continue;
-    // Prefer Zoom's talk_time; total duration can include ringing and waiting.
+
     let seconds = Number(call.talk_time);
     if (call.talk_time == null) {
       const answer = call.answer_time || call.answer_start_time;
@@ -71,22 +113,46 @@ export const sumZoomTalkTime = (calls: TalkTimeCall[], timeZone: string, now = n
       seconds = answer && end ? (Date.parse(end) - Date.parse(answer)) / 1000 : 0;
     }
     if (!Number.isFinite(seconds) || seconds <= 0) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    seconds = Math.trunc(seconds);
-    if (seconds === 0) continue;
-    weekly.talk_time_seconds += seconds;
-    // Connected calls are answered outbound calls with a real conversation.
-    // Incoming calls can contribute to talk time, but are not calls the user dialed.
-    if (isOutbound) weeklyCalls.add(callId);
-    if (date === range.today) {
-      daily.talk_time_seconds += seconds;
-      if (isOutbound) dailyCalls.add(callId);
-    }
+
+    connectedCallIds.add(callId);
+    if (isOutbound) connectedOutboundCallIds.add(callId);
+    if (contact) connectedContacts.add(contact);
+    if (seenElements.has(elementKey)) continue;
+    seenElements.add(elementKey);
+    talkTimeSeconds += Math.trunc(seconds);
   }
-  daily.connected_calls = dailyCalls.size;
-  weekly.connected_calls = weeklyCalls.size;
-  daily.dialed_calls = dailyDialedCalls.size;
-  weekly.dialed_calls = weeklyDialedCalls.size;
+
+  return {
+    from,
+    to,
+    talk_time_seconds: talkTimeSeconds,
+    total_calls: callIds.size,
+    inbound_calls: inboundCallIds.size,
+    outbound_calls: outboundCallIds.size,
+    connected_calls: connectedCallIds.size,
+    connected_outbound_calls: connectedOutboundCallIds.size,
+    unique_contacts: contacts.size,
+    unique_outbound_contacts: outboundContacts.size,
+    connected_unique_contacts: connectedContacts.size
+  };
+};
+
+export const sumZoomTalkTime = (calls: TalkTimeCall[], timeZone: string, now = new Date()) => {
+  const range = getTalkTimeRange(timeZone, now);
+  const dailySummary = sumZoomCallSummary(calls, timeZone, range.today, range.today, now);
+  const weeklySummary = sumZoomCallSummary(calls, timeZone, range.from, range.today, now);
+  const daily = {
+    ...dailySummary,
+    date: range.today,
+    total_connected_calls: dailySummary.connected_calls,
+    connected_calls: dailySummary.connected_outbound_calls,
+    dialed_calls: dailySummary.outbound_calls
+  };
+  const weekly = {
+    ...weeklySummary,
+    total_connected_calls: weeklySummary.connected_calls,
+    connected_calls: weeklySummary.connected_outbound_calls,
+    dialed_calls: weeklySummary.outbound_calls
+  };
   return { daily, weekly, timezone: timeZone, updated_at: now.toISOString() };
 };
