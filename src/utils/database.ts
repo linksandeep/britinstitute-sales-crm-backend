@@ -1,5 +1,36 @@
 import mongoose from 'mongoose';
 
+const prepareLeadContactIndexes = async (): Promise<void> => {
+  const leads = mongoose.connection.collection('leads');
+  let indexes: Awaited<ReturnType<typeof leads.indexes>> = [];
+
+  try {
+    indexes = await leads.indexes();
+  } catch (error: unknown) {
+    const mongoError = error as { code?: number };
+    if (mongoError.code !== 26) throw error;
+  }
+
+  for (const field of ['email', 'phone'] as const) {
+    const uniqueContactIndex = indexes.find((index) => {
+      const keys = Object.entries(index.key);
+      return index.unique === true && keys.length === 1 && keys[0]?.[0] === field;
+    });
+
+    if (uniqueContactIndex?.name) {
+      try {
+        await leads.dropIndex(uniqueContactIndex.name);
+        console.log(`🔧 Replaced unique lead ${field} index to allow linked Meta duplicates`);
+      } catch (error: unknown) {
+        const mongoError = error as { code?: number };
+        if (mongoError.code !== 27) throw error;
+      }
+    }
+
+    await leads.createIndex({ [field]: 1 }, { name: `${field}_1` });
+  }
+};
+
 export const connectDatabase = async (): Promise<void> => {
   try {
     const mongoUri = process.env.MONGODB_URI;
@@ -18,6 +49,8 @@ export const connectDatabase = async (): Promise<void> => {
 
     // Connect to MongoDB
     await mongoose.connect(mongoUri, options);
+
+    await prepareLeadContactIndexes();
 
     console.log('🚀 Connected to MongoDB successfully');
 

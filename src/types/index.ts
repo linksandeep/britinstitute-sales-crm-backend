@@ -73,6 +73,10 @@ export interface ILead extends Document {
   metaFeedbackLastStatus?: string;
   metaFeedbackLastSentAt?: Date;
   metaFeedbackLastError?: string;
+  duplicateOf?: mongoose.Types.ObjectId;
+  duplicateSequence?: number;
+  duplicateLabel?: string;
+  duplicateMatchReason?: 'NAME_EXISTS' | 'EMAIL_EXISTS' | 'PHONE_EXISTS' | 'EMAIL_PHONE_EXISTS';
   assignedTo?: mongoose.Types.ObjectId;
   assignedBy?: mongoose.Types.ObjectId;
   lastContactedAt?: Date;

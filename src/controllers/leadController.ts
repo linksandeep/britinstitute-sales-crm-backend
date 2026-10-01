@@ -113,6 +113,7 @@ export const getLeadById = async (req: Request, res: Response): Promise<void> =>
     const lead = await Lead.findById(id)
       .populate('assignedToUser', 'name email')
       .populate('assignedByUser', 'name email')
+      .populate('duplicateOf', 'name email phone status folder')
       .populate('notes.createdBy', 'name email');
 
     if (!lead) {
@@ -132,10 +133,20 @@ export const getLeadById = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
+    const populatedDuplicateOf = lead.duplicateOf as unknown as { _id?: mongoose.Types.ObjectId } | undefined;
+    const duplicateRootId = populatedDuplicateOf?._id || lead.duplicateOf || lead._id;
+    const duplicateLinks = await Lead.find({ duplicateOf: duplicateRootId })
+      .sort({ duplicateSequence: 1, createdAt: 1 })
+      .select('_id name status duplicateSequence duplicateLabel')
+      .lean();
+
     res.status(200).json({
       success: true,
       message: 'Lead retrieved successfully',
-      data: lead
+      data: {
+        ...lead.toObject(),
+        duplicateLinks
+      }
     });
   } catch (error) {
     console.error('Get lead by ID error:', error);
@@ -291,7 +302,7 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
     }
 
     // Check for duplicates if email or phone is being updated
-    if (updateData.email) {
+    if (updateData.email && updateData.email.toLowerCase().trim() !== lead.email) {
       const existingEmail = await Lead.findOne({ 
         email: updateData.email.toLowerCase().trim(),
         _id: { $ne: id }
@@ -314,7 +325,7 @@ export const updateLead = async (req: Request, res: Response): Promise<void> => 
       }
     }
     
-    if (updateData.phone) {
+    if (updateData.phone && updateData.phone.trim() !== lead.phone) {
       const existingPhone = await Lead.findOne({ 
         phone: updateData.phone.trim(),
         _id: { $ne: id }

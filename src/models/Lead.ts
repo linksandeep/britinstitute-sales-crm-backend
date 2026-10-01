@@ -175,6 +175,26 @@ const leadSchema = new Schema<ILead>({
     required: false,
     default: ''
   },
+  duplicateOf: {
+    type: Schema.Types.ObjectId,
+    ref: 'Lead',
+    required: false
+  },
+  duplicateSequence: {
+    type: Number,
+    min: 1,
+    required: false
+  },
+  duplicateLabel: {
+    type: String,
+    trim: true,
+    required: false
+  },
+  duplicateMatchReason: {
+    type: String,
+    enum: ['NAME_EXISTS', 'EMAIL_EXISTS', 'PHONE_EXISTS', 'EMAIL_PHONE_EXISTS'],
+    required: false
+  },
   status: {
     type: String,
     default: 'New',
@@ -264,8 +284,8 @@ const leadSchema = new Schema<ILead>({
    Indexes
 ======================= */
 
-leadSchema.index({ email: 1 }, { unique: true });
-leadSchema.index({ phone: 1 }, { unique: true });
+// Contact duplicates are normally rejected by the API, but Meta re-enquiries are
+// deliberately stored as separate leads and linked back to the oldest lead.
 leadSchema.index(
   { metaLeadId: 1 },
   {
@@ -285,6 +305,13 @@ leadSchema.index({ createdAt: -1 });
 leadSchema.index({ updatedAt: -1 });
 leadSchema.index({ lastContactedAt: -1 });
 leadSchema.index({ createdAt: 1 });
+leadSchema.index({ duplicateOf: 1, duplicateSequence: 1 }, {
+  unique: true,
+  partialFilterExpression: {
+    duplicateOf: { $type: 'objectId' },
+    duplicateSequence: { $type: 'number' }
+  }
+});
 
 // Compound indexes
 leadSchema.index({ status: 1, assignedTo: 1 });

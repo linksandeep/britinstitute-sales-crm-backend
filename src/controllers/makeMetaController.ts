@@ -33,7 +33,9 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
     res.status(result.outcome === 'created' ? 201 : 200).json({
       success: true,
       message: result.outcome === 'created'
-        ? 'Meta lead created successfully'
+        ? result.lead.duplicateOf
+          ? `${result.lead.duplicateLabel || 'Duplicate'} Meta lead created and linked to the older lead`
+          : 'Meta lead created successfully'
         : result.outcome === 'retargeting'
           ? 'Repeat Meta lead saved in Retargeting and linked to the existing CRM lead'
           : 'Meta lead was already processed',
@@ -46,7 +48,7 @@ export const receiveMakeMetaLead = async (req: Request, res: Response): Promise<
     });
   } catch (error: unknown) {
     const mongoError = error as { code?: number; keyValue?: Record<string, unknown> };
-    if (mongoError.code === 11000) {
+    if (mongoError.code === 11000 && mongoError.keyValue?.metaLeadId) {
       const leadData = normalizeMakeMetaLeadInput(req.body as Record<string, unknown>);
       const existingRetargeting = await RetargetingLead.findOne({ metaLeadId: leadData.metaLeadId }).lean();
       const existingLead = existingRetargeting
